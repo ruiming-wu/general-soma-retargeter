@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # IDE
-.vscode/settings.json
+.vscode
 
 # Log files, settings
 imgui.ini
