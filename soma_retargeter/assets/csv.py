@@ -83,6 +83,41 @@ class UnitreeG129DOF_CSVConfig:
         return row
 
 
+@dataclass
+class AgileOneNoHandsCSVConfig:
+    name: str = "agile_one_no_hands"
+    csv_header: ClassVar[List[str]] = [
+        "Frame",
+        "root_translateX", "root_translateY", "root_translateZ",
+        "root_rotateX", "root_rotateY", "root_rotateZ",
+        "left_hip_pitch_joint_dof", "left_hip_roll_joint_dof", "left_hip_yaw_joint_dof",
+        "left_knee_joint_dof", "left_ankle_roll_joint_dof", "left_ankle_pitch_joint_dof",
+        "right_hip_pitch_joint_dof", "right_hip_roll_joint_dof", "right_hip_yaw_joint_dof",
+        "right_knee_joint_dof", "right_ankle_roll_joint_dof", "right_ankle_pitch_joint_dof",
+        "waist_yaw_joint_dof", "head_yaw_joint_dof", "head_pitch_joint_dof",
+        "left_shoulder_pitch_joint_dof", "left_shoulder_roll_joint_dof",
+        "left_shoulder_yaw_joint_dof", "left_elbow_roll_joint_dof",
+        "left_wrist_yaw_joint_dof", "left_wrist_roll_joint_dof", "left_wrist_pitch_joint_dof",
+        "right_shoulder_pitch_joint_dof", "right_shoulder_roll_joint_dof",
+        "right_shoulder_yaw_joint_dof", "right_elbow_roll_joint_dof",
+        "right_wrist_yaw_joint_dof", "right_wrist_roll_joint_dof", "right_wrist_pitch_joint_dof"]
+
+    def to_anim_frame(self, csv_row: np.ndarray) -> np.ndarray:
+        return UnitreeG129DOF_CSVConfig().to_anim_frame(csv_row)
+
+    def to_csv_row(self, frame_idx: int, anim_row: np.ndarray) -> List[float]:
+        return UnitreeG129DOF_CSVConfig().to_csv_row(frame_idx, anim_row)
+
+
+def get_csv_config(robot_type: str) -> RobotCSVConfig:
+    if robot_type == "unitree_g1":
+        return UnitreeG129DOF_CSVConfig()
+    if robot_type == "agile_one":
+        return AgileOneNoHandsCSVConfig()
+
+    raise ValueError(f"[ERROR]: Unknown robot CSV config type: {robot_type}")
+
+
 def load_csv(file_path: str, fps: float = 120.0, csv_config: RobotCSVConfig = UnitreeG129DOF_CSVConfig()) -> CSVAnimationBuffer:
     """
     Load a robot motion CSV file into a ``CSVAnimationBuffer``.

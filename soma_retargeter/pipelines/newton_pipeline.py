@@ -65,57 +65,54 @@ class NewtonPipeline:
         self.joint_limit_weight = retargeter_config.get('joint_limit_weight', _DEFAULT_JOINT_LIMIT_OBJECTIVE_WEIGHT)
         self.smooth_joint_filter_weight = retargeter_config.get('smooth_joint_filter_weight', _DEFAULT_SMOOTH_JOINT_FILTER_OBJECTIVE_WEIGHT)
         self.post_processing_enabled = retargeter_config.get('enable_post_processing', True)
+        self.initial_robot_joint_positions = retargeter_config.get('initial_robot_joint_positions', None)
+        self.ground_height_offset = float(retargeter_config.get('ground_height_offset', 0.0))
         self.enable_self_penetration = False
         self.smooth_joint_filter_coord_masks = None
         self.joint_limit_clamper = None
 
-        if (self.target_type == pipeline_utils.TargetType.UNITREE_G1):
-            self.robot_builder = newton.ModelBuilder()
-            self.robot_builder.add_mjcf(
-                newton.utils.download_asset("unitree_g1") / "mjcf/g1_29dof_rev_1_0.xml")
+        self.robot_builder = pipeline_utils.build_robot_builder(self.target_type, retargeter_config)
 
-            self.human_robot_scaler = HumanToRobotScaler(
-                skeleton, retargeter_config['model_height'], io_utils.get_config_file(retargeter_config['human_robot_scaler_config']))
+        self.human_robot_scaler = HumanToRobotScaler(
+            skeleton, retargeter_config['model_height'], io_utils.get_config_file(retargeter_config['human_robot_scaler_config']))
 
-            self.num_body_count = self.robot_builder.body_count
-            self.num_dofs = self.robot_builder.joint_dof_count
-            self.ik_model = self._build_model(1)
+        self.num_body_count = self.robot_builder.body_count
+        self.num_dofs = self.robot_builder.joint_dof_count
+        self.ik_model = self._build_model(1)
 
-            (
-                self.mapped_joints,
-                self.mapped_joint_indices,
-                self.mapped_body_link_pos_data,
-                self.mapped_body_link_rot_data
-            ) = self._build_target_mapping(
-                self.ik_model,
-                self.human_robot_scaler.skeleton,
-                retargeter_config)
+        (
+            self.mapped_joints,
+            self.mapped_joint_indices,
+            self.mapped_body_link_pos_data,
+            self.mapped_body_link_rot_data
+        ) = self._build_target_mapping(
+            self.ik_model,
+            self.human_robot_scaler.skeleton,
+            retargeter_config)
 
-            smooth_joint_filter_objective_body_masks = retargeter_config.get('smooth_joint_filter_objective_body_masks', None)
-            if smooth_joint_filter_objective_body_masks is not None:
-                self.smooth_joint_filter_coord_masks = newton_utils.create_joint_coord_masks(
-                    self.ik_model, smooth_joint_filter_objective_body_masks, 0.0)
+        smooth_joint_filter_objective_body_masks = retargeter_config.get('smooth_joint_filter_objective_body_masks', None)
+        if smooth_joint_filter_objective_body_masks is not None:
+            self.smooth_joint_filter_coord_masks = newton_utils.create_joint_coord_masks(
+                self.ik_model, smooth_joint_filter_objective_body_masks, 0.0)
 
-            effector_names = self.human_robot_scaler.effector_names()
-            self.target_effector_indices = [effector_names.index(name) for name in self.mapped_joints]
-            self.feet_effector_indices = [
-                self.mapped_joints.index("LeftFoot"),
-                self.mapped_joints.index("RightFoot")]
+        effector_names = self.human_robot_scaler.effector_names()
+        self.target_effector_indices = [effector_names.index(name) for name in self.mapped_joints]
+        self.feet_effector_indices = [
+            self.mapped_joints.index("LeftFoot"),
+            self.mapped_joints.index("RightFoot")]
 
-            self.feet_stabilizer = FeetStabilizer(io_utils.get_config_file(retargeter_config['feet_stabilizer_config']))
-            self.joint_limit_clamper = JointLimitClamper(self.ik_model)
+        self.feet_stabilizer = FeetStabilizer(io_utils.get_config_file(retargeter_config['feet_stabilizer_config']))
+        self.joint_limit_clamper = JointLimitClamper(self.ik_model)
 
-            self.initialization_pose = None
-            self.num_initialization_frames = 0
-            self.num_stabilization_frames = 0
-            if (retargeter_config['initialization_pose']):
-                init_skel, init_anim = bvh_utils.load_bvh(io_utils.get_config_file(retargeter_config['initialization_pose']))
-                self.initialization_pose = SkeletonInstance(init_skel, [0, 0, 0], wp.transform_identity())
-                self.initialization_pose.set_local_transforms(init_anim.get_local_transforms(0))
-                self.num_initialization_frames = retargeter_config.get('num_initialization_frames', _DEFAULT_NUM_INITIALIZATION_FRAMES)
-                self.num_stabilization_frames = retargeter_config.get('num_stabilization_frames', _DEFAULT_NUM_STABILIZATION_FRAMES)
-        else:
-            raise ValueError("Unsupported robot type.")
+        self.initialization_pose = None
+        self.num_initialization_frames = 0
+        self.num_stabilization_frames = 0
+        if (retargeter_config['initialization_pose']):
+            init_skel, init_anim = bvh_utils.load_bvh(io_utils.get_config_file(retargeter_config['initialization_pose']))
+            self.initialization_pose = SkeletonInstance(init_skel, [0, 0, 0], wp.transform_identity())
+            self.initialization_pose.set_local_transforms(init_anim.get_local_transforms(0))
+            self.num_initialization_frames = retargeter_config.get('num_initialization_frames', _DEFAULT_NUM_INITIALIZATION_FRAMES)
+            self.num_stabilization_frames = retargeter_config.get('num_stabilization_frames', _DEFAULT_NUM_STABILIZATION_FRAMES)
 
     def clear(self):
         """
@@ -150,6 +147,8 @@ class NewtonPipeline:
 
             self.max_frames = max(self.max_frames, buffer.num_frames)
             buffer_effectors = self.human_robot_scaler.compute_effectors_from_buffer(buffer, scale_animation, offsets[i])
+            if self.ground_height_offset != 0.0:
+                buffer_effectors[:, :, 2] += self.ground_height_offset
 
             self.input_targets.append(buffer_effectors[:, self.target_effector_indices, :])
             self.input_sample_rates.append(buffers[i].sample_rate)
@@ -179,6 +178,8 @@ class NewtonPipeline:
         print(f"[INFO]\t  Target Robot Type: {pipeline_utils.get_target_str_from_type(self.target_type)}")
         print(f"[INFO]\t  Post-Processing Enabled: {self.post_processing_enabled}")
         print(f"[INFO]\t  Initialization Pose: {self.initialization_pose is not None}")
+        print(f"[INFO]\t  Initial Robot Joint Positions: {self.initial_robot_joint_positions is not None}")
+        print(f"[INFO]\t  Ground Height Offset: {self.ground_height_offset}")
         print(f"[INFO]\t  Initialization Frame Count: {self.num_initialization_frames}")
         print(f"[INFO]\t  Constraint Stabilization Frame Count: {self.num_stabilization_frames}")
         print(f"[INFO]\t  IK Solver Iterations: {self.ik_iterations}")
@@ -186,6 +187,7 @@ class NewtonPipeline:
         print(f"[INFO]\t  Smooth Joint Filter Objective Weight: {self.smooth_joint_filter_weight}")
 
         model = self._build_model(num_envs)
+        self._apply_initial_robot_joint_positions(model, num_envs)
         state = model.state()
 
         if self.post_processing_enabled:
@@ -289,6 +291,74 @@ class NewtonPipeline:
         model = builder.finalize(requires_grad=True)
 
         return model
+
+    def _apply_initial_robot_joint_positions(self, model, num_envs: int) -> None:
+        if not self.initial_robot_joint_positions:
+            return
+
+        config = self.initial_robot_joint_positions
+        if "joints" in config:
+            unit = config.get("unit", "rad")
+            joint_positions = config["joints"]
+        else:
+            unit = "rad"
+            joint_positions = config
+
+        if unit not in ("rad", "deg"):
+            raise ValueError(f"initial_robot_joint_positions.unit must be 'rad' or 'deg', got [{unit}]")
+
+        q_start = model.joint_q_start.numpy()
+        q_dim = np.diff(np.append(q_start, model.joint_coord_count))
+        joint_names = [newton_utils.get_name_from_label(label) for label in model.joint_label]
+        q_values = model.joint_q.numpy().astype(np.float32, copy=True)
+        unknown_joints = []
+
+        root_position = config.get("root_position", None) if isinstance(config, dict) else None
+        root_rotation_xyzw = config.get("root_rotation_xyzw", None) if isinstance(config, dict) else None
+        root_rotation_wxyz = config.get("root_rotation_wxyz", None) if isinstance(config, dict) else None
+        if root_rotation_xyzw is not None and root_rotation_wxyz is not None:
+            raise ValueError("initial_robot_joint_positions cannot set both root_rotation_xyzw and root_rotation_wxyz")
+        if root_rotation_wxyz is not None:
+            root_rotation_xyzw = [
+                root_rotation_wxyz[1],
+                root_rotation_wxyz[2],
+                root_rotation_wxyz[3],
+                root_rotation_wxyz[0],
+            ]
+        if root_position is not None and len(root_position) != 3:
+            raise ValueError("initial_robot_joint_positions.root_position must contain 3 values")
+        if root_rotation_xyzw is not None and len(root_rotation_xyzw) != 4:
+            raise ValueError("initial_robot_joint_positions.root_rotation_xyzw/root_rotation_wxyz must contain 4 values")
+
+        if root_position is not None or root_rotation_xyzw is not None:
+            for joint_id, dim in enumerate(q_dim):
+                if int(dim) != 7:
+                    continue
+                root_start = int(q_start[joint_id])
+                if root_position is not None:
+                    q_values[root_start:root_start + 3] = np.asarray(root_position, dtype=np.float32)
+                if root_rotation_xyzw is not None:
+                    q_values[root_start + 3:root_start + 7] = np.asarray(root_rotation_xyzw, dtype=np.float32)
+
+        for joint_name, value in joint_positions.items():
+            matched = False
+            q_value = float(np.deg2rad(value)) if unit == "deg" else float(value)
+            for joint_id, model_joint_name in enumerate(joint_names):
+                if model_joint_name != joint_name:
+                    continue
+                matched = True
+                if int(q_dim[joint_id]) != 1:
+                    raise ValueError(
+                        f"initial_robot_joint_positions only supports scalar joints; "
+                        f"[{joint_name}] has q dimension {int(q_dim[joint_id])}")
+                q_values[int(q_start[joint_id])] = q_value
+            if not matched:
+                unknown_joints.append(joint_name)
+
+        if unknown_joints:
+            raise ValueError(f"Unknown joints in initial_robot_joint_positions: {unknown_joints}")
+
+        wp.copy(model.joint_q, wp.array(q_values, dtype=wp.float32))
 
     def _build_target_mapping(self, model, skeleton, retargeter_config):
         mapped_joints = []

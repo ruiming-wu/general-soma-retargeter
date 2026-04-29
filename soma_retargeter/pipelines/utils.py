@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import IntEnum, auto
+from pathlib import Path
 
+import newton
 import soma_retargeter.utils.io_utils as io_utils
 import soma_retargeter.assets.usd as usd_utils
 
@@ -15,6 +17,7 @@ class SourceType(IntEnum):
 class TargetType(IntEnum):
     """Enumeration of supported target model types."""
     UNITREE_G1 = auto()
+    AGILE_ONE = auto()
 
 _SOURCE_TYPE_TO_STR = {
     SourceType.SOMA : "soma"
@@ -22,7 +25,8 @@ _SOURCE_TYPE_TO_STR = {
 _STR_TO_SOURCE_TYPE = {s : t for t, s in _SOURCE_TYPE_TO_STR.items()}
 
 _TARGET_TYPE_TO_STR = {
-    TargetType.UNITREE_G1 : "unitree_g1"
+    TargetType.UNITREE_G1 : "unitree_g1",
+    TargetType.AGILE_ONE : "agile_one"
 }
 _STR_TO_TARGET_TYPE = {s : t for t, s in _TARGET_TYPE_TO_STR.items()}
 
@@ -131,14 +135,35 @@ def get_retargeter_config(source: SourceType, target: TargetType) -> dict:
     Raises:
         ValueError: If the source or target type is not supported.
     """
-    if target != TargetType.UNITREE_G1:
-        raise ValueError(f"Unknown target type [{target}].")
-
-    if source == SourceType.SOMA:
-        filename = 'soma_to_g1_retargeter_config.json'
-    else:
+    if source != SourceType.SOMA:
         raise ValueError(f"Unknown source type [{source}] for target [{target}].")
 
-    return io_utils.load_json(
-        io_utils.get_config_file('unitree_g1', filename)
-    )
+    if target == TargetType.UNITREE_G1:
+        config_dir = 'unitree_g1'
+        filename = 'soma_to_g1_retargeter_config.json'
+    elif target == TargetType.AGILE_ONE:
+        config_dir = 'agile_one'
+        filename = 'soma_to_agile_one_retargeter_config.json'
+    else:
+        raise ValueError(f"Unknown target type [{target}].")
+
+    return io_utils.load_json(io_utils.get_config_file(config_dir, filename))
+
+
+def build_robot_builder(target: TargetType, retargeter_config: dict | None = None):
+    """Build a Newton robot builder for a retargeting target."""
+    builder = newton.ModelBuilder()
+    if target == TargetType.UNITREE_G1:
+        builder.add_mjcf(
+            newton.utils.download_asset("unitree_g1") / "mjcf/g1_29dof_rev_1_0.xml")
+    elif target == TargetType.AGILE_ONE:
+        if retargeter_config is None or "robot_mjcf_path" not in retargeter_config:
+            raise ValueError("[ERROR]: Agile One target requires robot_mjcf_path in retargeter config.")
+        mjcf_path = Path(retargeter_config["robot_mjcf_path"]).expanduser()
+        if not mjcf_path.exists():
+            raise FileNotFoundError(f"[ERROR]: Agile One MJCF not found: {mjcf_path}")
+        builder.add_mjcf(mjcf_path)
+    else:
+        raise ValueError(f"Unsupported robot type [{target}].")
+
+    return builder

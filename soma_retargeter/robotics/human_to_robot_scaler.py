@@ -32,10 +32,20 @@ class HumanToRobotScaler:
                 wp.vec3(*t_offset),
                 wp.normalize(wp.quat(*q_offset)))
 
-        joint_offsets["LeftToeBase"] = joint_offsets["LeftToe"]
-        joint_offsets["RightToeBase"] = joint_offsets["RightToe"]
+        # Some robot configs track SOMA toe effectors as LeftToe/RightToe,
+        # while the SOMA skeleton names the BVH joints LeftToeBase/RightToeBase.
+        # Only create aliases when the corresponding joint is actually mapped;
+        # robots without toe effectors, e.g. Agile One no-hands, should not fail.
+        for source_name, alias_name in (("LeftToe", "LeftToeBase"), ("RightToe", "RightToeBase")):
+            if alias_name in joint_scales and alias_name not in joint_offsets and source_name in joint_offsets:
+                joint_offsets[alias_name] = joint_offsets[source_name]
+            if source_name in joint_scales and source_name not in joint_offsets and alias_name in joint_offsets:
+                joint_offsets[source_name] = joint_offsets[alias_name]
 
         self.mapped_joints = [name for name in self.skeleton.joint_names if name in joint_scales.keys()]
+        missing_offsets = [name for name in self.mapped_joints if name not in joint_offsets]
+        if missing_offsets:
+            raise ValueError(f"Scaler config is missing joint_offsets for mapped joints: {missing_offsets}")
         self.mapped_joint_indices = wp.array([self.skeleton.joint_index(name) for name in self.mapped_joints], dtype=wp.int32)
         self.mapped_joint_scales = wp.array([joint_scales[name] for name in self.mapped_joints], dtype=wp.float32)
         self.mapped_joint_offsets = wp.array([joint_offsets[name] for name in self.mapped_joints], dtype=wp.transform)
