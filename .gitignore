@@ -16,4 +16,4 @@ wheels/
 imgui.ini
 
 # Local output for debugging
-.output
+output/
