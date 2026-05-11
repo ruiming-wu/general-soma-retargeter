@@ -1,22 +1,30 @@
 {
+    "_comment": "Initial Nutan Motive-BVH -> Agile One retargeter config. Nutan is not SOMA uniform: LeftUpLeg/RightUpLeg are thighs and LeftLeg/RightLeg are shins. Keep this file as the base config for multi-pose calibration; do not use soma_to_agile_one_* directly on Nutan BVH files.",
     "robot_mjcf_path": "/home/ruiming.wu/codes/H4/mjcf/agile_one_no_hands.xml",
-    "initialization_pose": "soma/soma_zero_frame0.bvh",
+    "initialization_pose": null,
     "num_initialization_frames": 10,
     "num_stabilization_frames": 5,
-    "human_robot_scaler_config": "agile_one/soma_to_agile_one_scaler_config.json",
+    "human_robot_scaler_config": "agile_one/nutan_to_agile_one_scaler_config.json",
     "feet_stabilizer_config": "agile_one/agile_one_feet_stabilizer_config.json",
-    "model_height": 1.74,
-
+    "model_height": 1.7,
     "ik_iterations": 24,
     "joint_limit_weight": 10.0,
     "smooth_joint_filter_weight": 5.5,
-    "collision_weight": 100.0,
+    "collision_weight": 0.0,
     "enable_post_processing": true,
-
     "initial_robot_joint_positions": {
         "unit": "rad",
-        "root_position": [0.0, 0.0, 1.0],
-        "root_rotation_xyzw": [0.0, 0.0, -0.70710678, 0.70710678],
+        "root_position": [
+            0.0,
+            0.0,
+            1.0
+        ],
+        "root_rotation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+        ],
         "joints": {
             "left_hip_pitch_joint": 0.0,
             "left_hip_roll_joint": 0.0,
@@ -33,32 +41,30 @@
             "waist_yaw_joint": 0.0,
             "head_yaw_joint": 0.0,
             "head_pitch_joint": 0.0,
-            "left_shoulder_pitch_joint": -1.5,
-            "left_shoulder_roll_joint": -1.3,
-            "left_shoulder_yaw_joint": -1.5,
-            "left_elbow_roll_joint": 1.5,
-            "left_wrist_yaw_joint": 1.5,
+            "left_shoulder_pitch_joint": -1.57079627,
+            "left_shoulder_roll_joint": -1.3962634,
+            "left_shoulder_yaw_joint": -1.57079627,
+            "left_elbow_roll_joint": 1.57079627,
+            "left_wrist_yaw_joint": 1.3962634,
             "left_wrist_roll_joint": 0.0,
             "left_wrist_pitch_joint": 0.0,
-            "right_shoulder_pitch_joint": 1.5,
-            "right_shoulder_roll_joint": 1.3,
-            "right_shoulder_yaw_joint": 1.5,
-            "right_elbow_roll_joint": -1.5,
-            "right_wrist_yaw_joint": -1.5,
+            "right_shoulder_pitch_joint": 1.57079627,
+            "right_shoulder_roll_joint": 1.3962634,
+            "right_shoulder_yaw_joint": 1.57079627,
+            "right_elbow_roll_joint": -1.57079627,
+            "right_wrist_yaw_joint": -1.3962634,
             "right_wrist_roll_joint": 0.0,
             "right_wrist_pitch_joint": 0.0
         }
     },
-
     "smooth_joint_filter_objective_body_masks": {
-        "left_shoulder_pitch_link"  : 0.1,
-        "left_shoulder_roll_link"   : 1.0,
-        "left_shoulder_yaw_link"    : 0.3,
-        "right_shoulder_pitch_link" : 0.1,
-        "right_shoulder_roll_link"  : 1.0,
-        "right_shoulder_yaw_link"   : 0.3
+        "left_shoulder_pitch_link": 0.1,
+        "left_shoulder_roll_link": 1.0,
+        "left_shoulder_yaw_link": 0.3,
+        "right_shoulder_pitch_link": 0.1,
+        "right_shoulder_roll_link": 1.0,
+        "right_shoulder_yaw_link": 0.3
     },
-
     "ik_map": {
         "Hips": {
             "t_body": "pelvis_link",
@@ -108,13 +114,13 @@
             "t_weight": 5.0,
             "r_weight": 2.5
         },
-        "LeftLeg": {
+        "LeftUpLeg": {
             "t_body": "left_hip_roll_link",
             "r_body": "left_hip_roll_link",
             "t_weight": 1.5,
             "r_weight": 0.15
         },
-        "LeftShin": {
+        "LeftLeg": {
             "t_body": "left_knee_link",
             "r_body": "left_knee_link",
             "t_weight": 1.0,
@@ -126,13 +132,13 @@
             "t_weight": 30.0,
             "r_weight": 2.0
         },
-        "RightLeg": {
+        "RightUpLeg": {
             "t_body": "right_hip_roll_link",
             "r_body": "right_hip_roll_link",
             "t_weight": 1.5,
             "r_weight": 0.15
         },
-        "RightShin": {
+        "RightLeg": {
             "t_body": "right_knee_link",
             "r_body": "right_knee_link",
             "t_weight": 1.0,

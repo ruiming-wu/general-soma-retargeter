@@ -1,0 +1,237 @@
+{
+    "_comment": "Initial Nutan Motive-BVH -> Agile One scaler config. Derived from soma_to_agile_one_scaler_config_new_20260506.json, with SOMA lower-body names remapped to Nutan names: LeftLeg->LeftUpLeg, LeftShin->LeftLeg, RightLeg->RightUpLeg, RightShin->RightLeg. Spine1 is used as the Nutan chest proxy for scaling head and arms.",
+    "robot_type": "agile_one",
+    "human_root_name": "Hips",
+    "human_height_assumption": 1.8,
+    "joint_scales": {
+        "Hips": 1.0,
+        "Spine1": 1.0,
+        "Head": 0.95,
+        "LeftUpLeg": 0.91,
+        "RightUpLeg": 0.91,
+        "LeftLeg": 1.02,
+        "RightLeg": 1.02,
+        "LeftFoot": 0.89,
+        "RightFoot": 0.89,
+        "LeftArm": 1.08,
+        "RightArm": 1.08,
+        "LeftForeArm": 0.94,
+        "RightForeArm": 0.94,
+        "LeftHand": 0.95,
+        "RightHand": 0.95
+    },
+    "joint_parents": {
+        "Hips": "",
+        "Spine1": "Hips",
+        "Head": "Spine1",
+        "LeftUpLeg": "Hips",
+        "RightUpLeg": "Hips",
+        "LeftLeg": "LeftUpLeg",
+        "RightLeg": "RightUpLeg",
+        "LeftFoot": "LeftLeg",
+        "RightFoot": "RightLeg",
+        "LeftArm": "Spine1",
+        "RightArm": "Spine1",
+        "LeftForeArm": "LeftArm",
+        "RightForeArm": "RightArm",
+        "LeftHand": "LeftForeArm",
+        "RightHand": "RightForeArm"
+    },
+    "joint_offsets": {
+        "Hips": [
+            [
+                0.0,
+                0.0,
+                0.0461
+            ],
+            [
+                0.4992,
+                0.5008,
+                0.5008,
+                0.4992
+            ]
+        ],
+        "Spine1": [
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.5,
+                0.5,
+                0.5,
+                0.5
+            ]
+        ],
+        "LeftUpLeg": [
+            [
+                -0.019,
+                0.0427,
+                0.0263
+            ],
+            [
+                0.5,
+                -0.5,
+                -0.5,
+                0.5
+            ]
+        ],
+        "LeftLeg": [
+            [
+                -0.0215,
+                0.008,
+                0.038
+            ],
+            [
+                0.5,
+                -0.5,
+                -0.5,
+                0.5
+            ]
+        ],
+        "LeftFoot": [
+            [
+                -0.0183,
+                0.02,
+                -0.0828
+            ],
+            [
+                0.6957,
+                -0.1264,
+                -0.1264,
+                0.6957
+            ]
+        ],
+        "RightUpLeg": [
+            [
+                -0.019,
+                -0.0427,
+                0.0263
+            ],
+            [
+                0.5,
+                0.5,
+                0.5,
+                0.5
+            ]
+        ],
+        "RightLeg": [
+            [
+                -0.0215,
+                -0.008,
+                0.038
+            ],
+            [
+                0.5,
+                0.5,
+                0.5,
+                0.5
+            ]
+        ],
+        "RightFoot": [
+            [
+                -0.0183,
+                -0.02,
+                -0.0828
+            ],
+            [
+                0.1264,
+                0.6957,
+                0.6957,
+                0.1264
+            ]
+        ],
+        "Head": [
+            [
+                -0.0254,
+                -0.0235,
+                0.0021
+            ],
+            [
+                -0.0003,
+                -0.0003,
+                0.7475,
+                0.6642
+            ]
+        ],
+        "LeftArm": [
+            [
+                0.0217,
+                -0.0183,
+                0.2486
+            ],
+            [
+                0.5109,
+                0.4984,
+                0.476,
+                0.5138
+            ]
+        ],
+        "LeftForeArm": [
+            [
+                0.0223,
+                0.0561,
+                -0.0554
+            ],
+            [
+                0.0064,
+                0.0248,
+                0.0005,
+                0.9997
+            ]
+        ],
+        "LeftHand": [
+            [
+                -0.0167,
+                -0.0624,
+                0.0612
+            ],
+            [
+                0.9987,
+                0.0095,
+                -0.0479,
+                0.016
+            ]
+        ],
+        "RightArm": [
+            [
+                0.0217,
+                0.0183,
+                0.2486
+            ],
+            [
+                0.476,
+                -0.5138,
+                -0.5109,
+                0.4984
+            ]
+        ],
+        "RightForeArm": [
+            [
+                0.0223,
+                -0.0561,
+                -0.0554
+            ],
+            [
+                0.0005,
+                -0.9997,
+                -0.0064,
+                0.0248
+            ]
+        ],
+        "RightHand": [
+            [
+                -0.0167,
+                0.0624,
+                0.0574
+            ],
+            [
+                -0.0479,
+                -0.016,
+                -0.9987,
+                0.0095
+            ]
+        ]
+    }
+}

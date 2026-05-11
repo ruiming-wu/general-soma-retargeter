@@ -1,0 +1,37 @@
+{
+  "template_bvh": "/home/ruiming.wu/codes/general-soma-retargeter/soma_retargeter/configs/nutan/neutral_standing.bvh",
+  "output_bvh": "/home/ruiming.wu/codes/general-soma-retargeter/soma_retargeter/configs/nutan/left_step_stance.bvh",
+  "joint_rotation_offsets_xyz_deg": {
+    "LeftUpLeg": [
+      -80.0,
+      0.0,
+      0.0
+    ],
+    "LeftLeg": [
+      80.0,
+      0.0,
+      0.0
+    ],
+    "RightUpLeg": [
+      60.0,
+      0.0,
+      0.0
+    ],
+    "RightLeg": [
+      10.0,
+      0.0,
+      0.0
+    ],
+    "RightFoot": [
+      -20.0,
+      0.0,
+      0.0
+    ]
+  },
+  "root_view_offset_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "note": "BVH stores the edited single-frame local joint transforms. root_view_offset_m is only a viewer offset."
+}

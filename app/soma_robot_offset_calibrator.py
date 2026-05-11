@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Interactive SOMA-to-robot offset calibration tool.
+"""Interactive source-to-robot offset calibration tool.
 
 This app is intentionally separate from ``bvh_to_csv_converter.py``. It uses
 the existing Newton/OpenGL/ImGui stack so SOMA's USD skinned mesh can be reused
-directly while the robot is loaded from an MJCF file.
+directly when available while the robot is loaded from an MJCF file. For
+non-SOMA BVH skeletons, pass ``--source_mesh none`` to run in skeleton-only mode.
 """
 
 from __future__ import annotations
@@ -66,7 +67,7 @@ _AXIS_COLORS = (
 
 
 class SomaRobotOffsetCalibrator:
-    """Display SOMA, robot, and calibrated offset preview for manual calibration."""
+    """Display a source skeleton, robot, and calibrated offset preview for manual calibration."""
 
     def __init__(self, viewer, args: argparse.Namespace):
         if isinstance(viewer, newton.viewer.ViewerNull):
@@ -74,7 +75,9 @@ class SomaRobotOffsetCalibrator:
 
         self.viewer = viewer
         self.viewer.vsync = True
-        self.viewer.renderer.set_title("SOMA Robot Offset Calibrator")
+        self.source_name = args.source_name
+        self.source_mesh_mode = args.source_mesh
+        self.viewer.renderer.set_title(f"{self.source_name} Robot Offset Calibrator")
         self._suppress_default_viewer_ui()
         self.viewer.register_ui_callback(lambda ui: self.gui(ui), position="free")
 
@@ -82,9 +85,9 @@ class SomaRobotOffsetCalibrator:
         self.initial_offset_x = float(args.initial_offset_x)
         self.overlap_x = 0.0
         self.soma_root_offset = np.zeros(3, dtype=np.float32)
-        self.show_soma_mesh = True
-        self.show_soma_skeleton = False
-        self.show_preview_mesh = True
+        self.show_soma_mesh = self.source_mesh_mode != "none"
+        self.show_soma_skeleton = self.source_mesh_mode == "none"
+        self.show_preview_mesh = self.source_mesh_mode != "none"
         self.show_preview_skeleton = True
         self.show_preview_mapped_axes = True
         self.show_preview_mapped_names = False
@@ -94,11 +97,14 @@ class SomaRobotOffsetCalibrator:
         self.frame_dt = 1.0 / 60.0
         self.last_export_path = ""
         self.last_export_status = ""
+        self.last_pose_pair_path = ""
+        self.last_pose_pair_status = ""
 
         self.converter = SpaceConverter(FacingDirectionType.MUJOCO)
-        self._load_soma(_DEFAULT_SOMA_BVH, Path(args.soma_usd))
+        self._load_soma(Path(args.soma_bvh), Path(args.soma_usd))
         self._load_calibration_configs(args)
         self._load_robot(self._resolve_robot_mjcf(args))
+        self._apply_initial_robot_joint_positions()
         self._validate_ik_map_bodies()
         self.preview_report = self._compute_preview_report()
 
@@ -126,13 +132,16 @@ class SomaRobotOffsetCalibrator:
             self._soma_world_transform(),
         )
         self.soma_instance.set_local_transforms(self.soma_current_local)
-        self.soma_mesh = usd_utils.load_skeletal_mesh_from_usd(
-            str(self.soma_usd),
-            self.skeleton,
-            "/OUTPUT/c_geometry_grp",
-            "/OUTPUT/c_skeleton_grp/Root",
-        )
-        self.soma_mesh_renderer = SkeletalMeshRenderer(self.soma_mesh)
+        self.soma_mesh = None
+        self.soma_mesh_renderer = None
+        if self.source_mesh_mode == "soma":
+            self.soma_mesh = usd_utils.load_skeletal_mesh_from_usd(
+                str(self.soma_usd),
+                self.skeleton,
+                "/OUTPUT/c_geometry_grp",
+                "/OUTPUT/c_skeleton_grp/Root",
+            )
+            self.soma_mesh_renderer = SkeletalMeshRenderer(self.soma_mesh)
         self.soma_skeleton_renderer = SkeletonRenderer(self.skeleton, [0])
         self.preview_instance = SkeletonInstance(
             self.skeleton,
@@ -141,8 +150,23 @@ class SomaRobotOffsetCalibrator:
         )
         self.preview_current_local = np.copy(self.soma_current_local)
         self.preview_instance.set_local_transforms(self.preview_current_local)
-        self.preview_mesh_renderer = SkeletalMeshRenderer(self.soma_mesh)
+        self.preview_mesh_renderer = SkeletalMeshRenderer(self.soma_mesh) if self.soma_mesh is not None else None
         self.preview_skeleton_renderer = SkeletonRenderer(self.skeleton, [0])
+
+    def _load_soma_pose(self, soma_bvh: Path) -> None:
+        """Load another single-frame source BVH without rebuilding the robot."""
+        if getattr(self, "soma_mesh_renderer", None) is not None:
+            self.soma_mesh_renderer.clear(self.viewer)
+        if hasattr(self, "soma_skeleton_renderer"):
+            self.soma_skeleton_renderer.clear(self.viewer)
+        if getattr(self, "preview_mesh_renderer", None) is not None:
+            self.preview_mesh_renderer.clear(self.viewer)
+        if hasattr(self, "preview_skeleton_renderer"):
+            self.preview_skeleton_renderer.clear(self.viewer)
+        self._load_soma(soma_bvh, self.soma_usd)
+        self._load_calibration_configs(self.args)
+        self.preview_report = self._compute_preview_report()
+        self._update_scene()
 
     def _load_robot(self, robot_mjcf: Path) -> None:
         self.robot_mjcf = robot_mjcf.expanduser().resolve()
@@ -157,6 +181,7 @@ class SomaRobotOffsetCalibrator:
         self.robot_body_name_to_idx = {name: i for i, name in enumerate(self.robot_body_names)}
         self.robot_joint_controls = self._build_robot_joint_controls()
         self.robot_pelvis_control = self._build_robot_pelvis_control()
+        self.robot_root_euler_deg = R.from_quat(self.robot_q[3:7]).as_euler("xyz", degrees=True).astype(np.float32)
 
     def _load_calibration_configs(self, args: argparse.Namespace) -> None:
         self.robot_type = args.robot_type or (self._infer_robot_type(args.robot_mjcf) if args.robot_mjcf else "unitree_g1")
@@ -244,6 +269,9 @@ class SomaRobotOffsetCalibrator:
         path = Path(path_like).expanduser()
         if path.is_absolute():
             return path.resolve()
+        repo_relative = (_REPO_ROOT / path).resolve()
+        if repo_relative.exists():
+            return repo_relative
         if len(path.parts) == 1:
             return io_utils.get_config_file(str(path)).resolve()
         return io_utils.get_config_file(*path.parts).resolve()
@@ -320,6 +348,28 @@ class SomaRobotOffsetCalibrator:
                 return {"name": name, "body_id": body_id, "show_name": True, "show_axis": True}
         return None
 
+    def _apply_initial_robot_joint_positions(self) -> None:
+        initial = self.base_retargeter_config.get("initial_robot_joint_positions")
+        if not isinstance(initial, dict):
+            return
+        if "root_position" in initial:
+            self.robot_q[:3] = np.asarray(initial["root_position"], dtype=np.float32)
+        if "root_rotation_xyzw" in initial:
+            q = np.asarray(initial["root_rotation_xyzw"], dtype=np.float32)
+            q = q / max(float(np.linalg.norm(q)), 1e-12)
+            self.robot_q[3:7] = q
+            self.robot_root_euler_deg = R.from_quat(q).as_euler("xyz", degrees=True).astype(np.float32)
+        joints = initial.get("joints", {})
+        if isinstance(joints, dict):
+            control_by_name = {control["name"]: control for control in self.robot_joint_controls}
+            for joint_name, value in joints.items():
+                control = control_by_name.get(joint_name)
+                if control is None:
+                    continue
+                q_value = float(value)
+                self.robot_q[control["q_index"]] = q_value
+                control["value"] = float(np.degrees(q_value)) if control["is_revolute"] else q_value
+
     def _soma_world_transform(self):
         # overlap_x == 0 keeps the requested default separation.
         # overlap_x == initial_offset_x moves SOMA onto the robot.
@@ -345,6 +395,10 @@ class SomaRobotOffsetCalibrator:
         if hasattr(self, "preview_joint_names"):
             self._sync_preview_avatar()
             self.preview_report = self._compute_preview_report()
+
+    def _set_robot_root_euler(self, euler_deg: np.ndarray) -> None:
+        q = R.from_euler("xyz", euler_deg, degrees=True).as_quat().astype(np.float32)
+        self.robot_q[3:7] = q / max(float(np.linalg.norm(q)), 1e-12)
 
     def _soma_global_transforms_np(self) -> np.ndarray:
         global_tx = self.soma_instance.compute_global_transforms()
@@ -550,6 +604,62 @@ class SomaRobotOffsetCalibrator:
             "robot_joint_q": self.robot_q.astype(float).tolist(),
             "robot_body_transforms": self._robot_body_transforms_np().astype(float).tolist(),
         }
+
+    def _robot_joint_values_by_name(self) -> dict:
+        values = {}
+        for control in self.robot_joint_controls:
+            q_value = float(self.robot_q[control["q_index"]])
+            values[control["name"]] = q_value
+        return values
+
+    def _pose_pair_sample(self) -> dict:
+        self._update_scene()
+        robot_body_q = self._robot_body_transforms_np()
+        robot_body_transforms = {
+            name: robot_body_q[idx].astype(float).tolist()
+            for idx, name in enumerate(self.robot_body_names)
+        }
+        ik_targets = {}
+        for joint_name, mapping in self.base_retargeter_config.get("ik_map", {}).items():
+            t_body = mapping["t_body"]
+            r_body = mapping["r_body"]
+            if t_body not in robot_body_transforms or r_body not in robot_body_transforms:
+                continue
+            ik_targets[joint_name] = {
+                "t_body": t_body,
+                "r_body": r_body,
+                "target_position": robot_body_transforms[t_body][:3],
+                "target_rotation_xyzw": robot_body_transforms[r_body][3:7],
+            }
+        return {
+            "schema": "soma_robot_pose_pair.v1",
+            "robot_type": self.robot_type,
+            "robot_mjcf": str(self.robot_mjcf),
+            "soma_bvh": str(self.soma_bvh),
+            "soma_usd": str(self.soma_usd),
+            "base_retargeter_config": str(self.base_retargeter_path),
+            "base_scaler_config": str(self.base_scaler_path),
+            "soma_root_view_offset_m": self.soma_root_offset.astype(float).tolist(),
+            "robot_root_position": self.robot_q[:3].astype(float).tolist(),
+            "robot_root_rotation_xyzw": self.robot_q[3:7].astype(float).tolist(),
+            "robot_joint_q": self.robot_q.astype(float).tolist(),
+            "robot_joints": self._robot_joint_values_by_name(),
+            "robot_body_transforms": robot_body_transforms,
+            "ik_targets": ik_targets,
+        }
+
+    def save_pose_pair(self) -> Path:
+        pose_pair_dir = self.export_dir / "pose_pairs"
+        pose_pair_dir.mkdir(parents=True, exist_ok=True)
+        path = pose_pair_dir / f"{self.soma_bvh.stem}__{self.robot_type}.json"
+        suffix = 1
+        while path.exists():
+            path = pose_pair_dir / f"{self.soma_bvh.stem}__{self.robot_type}_{suffix:02d}.json"
+            suffix += 1
+        self._write_json(path, self._pose_pair_sample())
+        self.last_pose_pair_path = str(path)
+        self.last_pose_pair_status = "saved"
+        return path
 
     def _write_report_md(self, path: Path, report: dict) -> None:
         summary = report["summary"]
@@ -812,17 +922,44 @@ class SomaRobotOffsetCalibrator:
         return False, float(value)
 
     def _ui_soma_panel(self, ui) -> None:
+        import tkinter as tk
+        from tkinter import filedialog as tk_filedialog
+
         viewport = ui.get_main_viewport()
         height = viewport.size.y - _BOTTOM_PANEL_HEIGHT - 3 * _PANEL_MARGIN
         ui.set_next_window_pos(ui.ImVec2(_PANEL_MARGIN, _PANEL_MARGIN))
         ui.set_next_window_size(ui.ImVec2(_SIDE_PANEL_WIDTH, height))
         ui.set_next_window_bg_alpha(_PANEL_ALPHA)
         ui.begin("SOMA Joints", flags=(ui.WindowFlags_.no_collapse | ui.WindowFlags_.no_resize))
-        ui.text(f"SOMA joints: {self.skeleton.num_joints}")
-        ui.text(f"USD: {self.soma_usd.name}")
+        ui.text(f"{self.source_name} joints: {self.skeleton.num_joints}")
+        ui.text(f"BVH: {self.soma_bvh.name}")
+        ui.text(f"Source mesh: {self.source_mesh_mode}")
+        if self.source_mesh_mode != "none":
+            ui.text(f"USD: {self.soma_usd.name}")
         ui.separator()
-        changed, self.show_soma_mesh = ui.checkbox("Show mesh", self.show_soma_mesh)
-        if changed and not self.show_soma_mesh:
+        if ui.button("Load single-frame BVH"):
+            root = tk.Tk()
+            root.withdraw()
+            bvh_path = tk_filedialog.askopenfilename(
+                title=f"Load {self.source_name} single-frame BVH",
+                initialdir=str(self.soma_bvh.parent),
+                defaultextension=".bvh",
+                filetypes=[("BVH files", "*.bvh")],
+            )
+            root.destroy()
+            if bvh_path:
+                try:
+                    self._load_soma_pose(Path(bvh_path))
+                    self.last_pose_pair_status = f"loaded: {Path(bvh_path).name}"
+                except Exception as exc:
+                    self.last_pose_pair_status = f"load failed: {exc}"
+        if self.soma_mesh_renderer is not None:
+            changed, self.show_soma_mesh = ui.checkbox("Show mesh", self.show_soma_mesh)
+        else:
+            self.show_soma_mesh = False
+            changed = False
+            ui.text("Show mesh: unavailable in source_mesh=none mode")
+        if changed and not self.show_soma_mesh and self.soma_mesh_renderer is not None:
             self.soma_mesh_renderer.clear(self.viewer)
         changed, self.show_soma_skeleton = ui.checkbox("Show skeleton", self.show_soma_skeleton)
         if changed and not self.show_soma_skeleton:
@@ -891,6 +1028,7 @@ class SomaRobotOffsetCalibrator:
         _, self.show_robot_mesh = ui.checkbox("Show robot mesh", self.show_robot_mesh)
         if ui.button("Reset Robot"):
             self.robot_q[:] = self.robot_q_default
+            self.robot_root_euler_deg = R.from_quat(self.robot_q[3:7]).as_euler("xyz", degrees=True).astype(np.float32)
             for control in self.robot_joint_controls:
                 q_value = float(self.robot_q[control["q_index"]])
                 control["value"] = float(np.degrees(q_value)) if control["is_revolute"] else q_value
@@ -912,6 +1050,36 @@ class SomaRobotOffsetCalibrator:
                     "Pelvis axis",
                     bool(self.robot_pelvis_control["show_axis"]),
                 )
+            ui.separator()
+
+        if ui.collapsing_header("Floating Root", flags=ui.TreeNodeFlags_.default_open):
+            ui.text("Root position")
+            for axis_idx, axis_name in enumerate(("x", "y", "z")):
+                changed, value = self._slider_input_float(
+                    ui,
+                    axis_name,
+                    float(self.robot_q[axis_idx]),
+                    -2.0 if axis_idx < 2 else -0.5,
+                    2.0,
+                    "%.3f",
+                    _SIDE_PANEL_WIDTH,
+                )
+                if changed:
+                    self.robot_q[axis_idx] = value
+            ui.text("Root rotation")
+            for axis_idx, axis_name in enumerate(("rx", "ry", "rz")):
+                changed, value = self._slider_input_float(
+                    ui,
+                    axis_name,
+                    float(self.robot_root_euler_deg[axis_idx]),
+                    -180.0,
+                    180.0,
+                    "%.2f",
+                    _SIDE_PANEL_WIDTH,
+                )
+                if changed:
+                    self.robot_root_euler_deg[axis_idx] = value
+                    self._set_robot_root_euler(self.robot_root_euler_deg)
             ui.separator()
 
         for i, control in enumerate(self.robot_joint_controls):
@@ -957,8 +1125,13 @@ class SomaRobotOffsetCalibrator:
         ui.text(f"Max rot: {summary.get('max_rotation_error_deg', 0.0):.1f}deg")
         ui.text(f"Worst: {summary.get('worst_joint', '')}")
         ui.separator()
-        changed, self.show_preview_mesh = ui.checkbox("Show preview mesh", self.show_preview_mesh)
-        if changed and not self.show_preview_mesh:
+        if self.preview_mesh_renderer is not None:
+            changed, self.show_preview_mesh = ui.checkbox("Show preview mesh", self.show_preview_mesh)
+        else:
+            self.show_preview_mesh = False
+            changed = False
+            ui.text("Show preview mesh: unavailable in source_mesh=none mode")
+        if changed and not self.show_preview_mesh and self.preview_mesh_renderer is not None:
             self.preview_mesh_renderer.clear(self.viewer)
         changed, self.show_preview_skeleton = ui.checkbox("Show preview skeleton", self.show_preview_skeleton)
         if changed and not self.show_preview_skeleton:
@@ -985,10 +1158,20 @@ class SomaRobotOffsetCalibrator:
                 self.export_calibration()
             except Exception as exc:
                 self.last_export_status = f"export failed: {exc}"
+        ui.same_line()
+        if ui.button("Save Pose Pair"):
+            try:
+                self.save_pose_pair()
+            except Exception as exc:
+                self.last_pose_pair_status = f"pose-pair save failed: {exc}"
         if self.last_export_status:
             ui.text(f"Status: {self.last_export_status}")
         if self.last_export_path:
             ui.text(f"Path: {self.last_export_path}")
+        if self.last_pose_pair_status:
+            ui.text(f"Pose pair: {self.last_pose_pair_status}")
+        if self.last_pose_pair_path:
+            ui.text(f"Pose pair path: {self.last_pose_pair_path}")
         ui.separator()
 
         for joint_name in self.preview_joint_names:
@@ -1071,6 +1254,7 @@ class SomaRobotOffsetCalibrator:
             self.soma_show_names[:] = False
             self.soma_show_axes[:] = False
             self.robot_q[:] = self.robot_q_default
+            self.robot_root_euler_deg = R.from_quat(self.robot_q[3:7]).as_euler("xyz", degrees=True).astype(np.float32)
             for control in self.robot_joint_controls:
                 q_value = float(self.robot_q[control["q_index"]])
                 control["value"] = float(np.degrees(q_value)) if control["is_revolute"] else q_value
@@ -1087,8 +1271,21 @@ def parse_args():
 
     parser = newton.examples.create_parser()
     parser.set_defaults(viewer="gl")
+    parser.add_argument("--soma_bvh", type=str, default=str(_DEFAULT_SOMA_BVH))
     parser.add_argument("--robot_mjcf", type=str, default=None)
     parser.add_argument("--soma_usd", type=str, default=str(_DEFAULT_SOMA_USD))
+    parser.add_argument(
+        "--source_name",
+        type=str,
+        default="SOMA",
+        help="Display name for the source skeleton. Use e.g. Nutan for non-SOMA BVH files.",
+    )
+    parser.add_argument(
+        "--source_mesh",
+        choices=["soma", "none"],
+        default="soma",
+        help="Use 'none' for source BVH skeletons that do not match the SOMA USD mesh.",
+    )
     parser.add_argument("--initial_offset_x", type=float, default=1.0)
     parser.add_argument("--robot_type", choices=["unitree_g1", "agile_one"], default=None)
     parser.add_argument("--base_retargeter_config", type=str, default=None)

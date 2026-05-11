@@ -67,6 +67,12 @@ class NewtonPipeline:
         self.post_processing_enabled = retargeter_config.get('enable_post_processing', True)
         self.initial_robot_joint_positions = retargeter_config.get('initial_robot_joint_positions', None)
         self.ground_height_offset = float(retargeter_config.get('ground_height_offset', 0.0))
+        self.root_target_joint_name = retargeter_config.get('root_target_joint_name', 'Hips')
+        root_mapping = retargeter_config.get('ik_map', {}).get(self.root_target_joint_name, {})
+        # Root target translation offsets are authored in world XY. They align
+        # the source root trajectory horizontally without introducing vertical
+        # drift from root pitch/roll.
+        self.root_target_translation_offset = np.asarray(root_mapping.get('t_offset', [0.0, 0.0, 0.0]), dtype=np.float32)
         self.enable_self_penetration = False
         self.smooth_joint_filter_coord_masks = None
         self.joint_limit_clamper = None
@@ -147,11 +153,18 @@ class NewtonPipeline:
 
             self.max_frames = max(self.max_frames, buffer.num_frames)
             buffer_effectors = self.human_robot_scaler.compute_effectors_from_buffer(buffer, scale_animation, offsets[i])
+            if np.any(self.root_target_translation_offset != 0.0):
+                buffer_effectors = self._apply_root_target_translation_offset(buffer_effectors)
             if self.ground_height_offset != 0.0:
                 buffer_effectors[:, :, 2] += self.ground_height_offset
 
             self.input_targets.append(buffer_effectors[:, self.target_effector_indices, :])
             self.input_sample_rates.append(buffers[i].sample_rate)
+
+    def _apply_root_target_translation_offset(self, buffer_effectors: np.ndarray) -> np.ndarray:
+        buffer_effectors = np.array(buffer_effectors, copy=True)
+        buffer_effectors[:, :, 0:3] += self.root_target_translation_offset[None, None, :]
+        return buffer_effectors
 
     def execute(self):
         """

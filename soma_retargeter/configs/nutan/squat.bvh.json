@@ -1,0 +1,17 @@
+{
+  "template_bvh": "/home/ruiming.wu/codes/general-soma-retargeter/soma_retargeter/configs/nutan/squat.bvh",
+  "output_bvh": "/home/ruiming.wu/codes/general-soma-retargeter/soma_retargeter/configs/nutan/squat.bvh",
+  "joint_rotation_offsets_xyz_deg": {
+    "Hips": [
+      -7.891544818878174,
+      0.0023925546556711197,
+      0.15744252502918243
+    ]
+  },
+  "root_view_offset_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "note": "BVH stores the edited single-frame local joint transforms. root_view_offset_m is only a viewer offset."
+}
