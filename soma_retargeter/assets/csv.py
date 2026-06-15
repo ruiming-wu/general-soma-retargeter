@@ -12,6 +12,54 @@ from scipy.spatial.transform import Rotation as R
 from soma_retargeter.robotics.csv_animation_buffer import CSVAnimationBuffer
 
 
+AGILE_ONE_FIXED_TEKKEN2_HANDS_ALIGNED_JOINT_NAMES: List[str] = [
+    "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+    "left_knee_joint", "left_ankle_roll_joint", "left_ankle_pitch_joint",
+    "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+    "right_knee_joint", "right_ankle_roll_joint", "right_ankle_pitch_joint",
+    "waist_yaw_joint", "head_yaw_joint", "head_pitch_joint",
+    "left_shoulder_pitch_joint", "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint", "left_elbow_roll_joint",
+    "left_wrist_yaw_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint",
+    "left_thumb_joint_0", "left_thumb_joint_1", "left_thumb_joint_2",
+    "left_thumb_joint_3", "left_thumb_joint_4_follower",
+    "left_index_pitch_joint_reorder_1", "left_index_swing_joint_reorder_0",
+    "left_index_pip_joint", "left_index_dip_joint_follower",
+    "left_middle_pitch_joint_reorder_1", "left_middle_swing_joint_reorder_0",
+    "left_middle_pip_joint", "left_middle_dip_joint_follower",
+    "left_ring_pitch_joint_reorder_1", "left_ring_swing_joint_reorder_0",
+    "left_ring_pip_joint", "left_ring_dip_joint_follower",
+    "left_little_pitch_joint_reorder_1", "left_little_swing_joint_reorder_0",
+    "left_little_pip_joint", "left_little_dip_joint_follower",
+    "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint", "right_elbow_roll_joint",
+    "right_wrist_yaw_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint",
+    "right_thumb_joint_0", "right_thumb_joint_1", "right_thumb_joint_2",
+    "right_thumb_joint_3", "right_thumb_joint_4_follower",
+    "right_index_pitch_joint_reorder_1", "right_index_swing_joint_reorder_0",
+    "right_index_pip_joint", "right_index_dip_joint_follower",
+    "right_middle_pitch_joint_reorder_1", "right_middle_swing_joint_reorder_0",
+    "right_middle_pip_joint", "right_middle_dip_joint_follower",
+    "right_ring_pitch_joint_reorder_1", "right_ring_swing_joint_reorder_0",
+    "right_ring_pip_joint", "right_ring_dip_joint_follower",
+    "right_little_pitch_joint_reorder_1", "right_little_swing_joint_reorder_0",
+    "right_little_pip_joint", "right_little_dip_joint_follower",
+]
+
+
+def _to_csv_row_with_joints(frame_idx: int, anim_row: np.ndarray, joint_values_rad: np.ndarray) -> List[float]:
+    # translation (m -> cm)
+    t = wp.vec3(*anim_row[0:3]) * 100.0
+    # root rotation (quat -> euler deg)
+    q = wp.quat(*anim_row[3:7])
+    euler = R.from_quat([q[0], q[1], q[2], q[3]]).as_euler("xyz", degrees=True)
+
+    row = [frame_idx, t[0], t[1], t[2], euler[0], euler[1], euler[2]]
+    row.extend(np.rad2deg(joint_values_rad).tolist())
+
+    return row
+
+
 class RobotCSVConfig(Protocol):
     name: str
     csv_header: List[str]
@@ -69,23 +117,12 @@ class UnitreeG129DOF_CSVConfig:
         """
         Convert one anim buffer row into a CSV row with this config's layout.
         """
-        # translation (m -> cm)
-        t = wp.vec3(*anim_row[0:3]) * 100.0
-        # root rotation (quat -> euler deg)
-        q = wp.quat(*anim_row[3:7])
-        euler = R.from_quat([q[0], q[1], q[2], q[3]]).as_euler("xyz", degrees=True)
-
-        row = [frame_idx, t[0], t[1], t[2], euler[0], euler[1], euler[2]]
-
-        # joints (rad -> deg)
-        row.extend(np.rad2deg(anim_row[7:]))
-
-        return row
+        return _to_csv_row_with_joints(frame_idx, anim_row, np.asarray(anim_row[7:]))
 
 
 @dataclass
 class AgileOneNoHandsCSVConfig:
-    name: str = "agile_one_no_hands"
+    name: str = "agile_one"
     csv_header: ClassVar[List[str]] = [
         "Frame",
         "root_translateX", "root_translateY", "root_translateZ",
@@ -106,7 +143,26 @@ class AgileOneNoHandsCSVConfig:
         return UnitreeG129DOF_CSVConfig().to_anim_frame(csv_row)
 
     def to_csv_row(self, frame_idx: int, anim_row: np.ndarray) -> List[float]:
-        return UnitreeG129DOF_CSVConfig().to_csv_row(frame_idx, anim_row)
+        joint_values = np.asarray(anim_row[7:])
+        target_joint_names = [name.removesuffix("_dof") for name in self.csv_header[7:]]
+
+        if len(joint_values) == len(target_joint_names):
+            selected_joint_values = joint_values
+        elif len(joint_values) == len(AGILE_ONE_FIXED_TEKKEN2_HANDS_ALIGNED_JOINT_NAMES):
+            # Fixed-hands Agile One retargeting includes hand joints in the Newton model.
+            # Downstream SONIC motionlib remains the legacy 29-DOF no-hands layout.
+            fixed_index = {
+                name: idx for idx, name in enumerate(AGILE_ONE_FIXED_TEKKEN2_HANDS_ALIGNED_JOINT_NAMES)
+            }
+            selected_joint_values = np.asarray([joint_values[fixed_index[name]] for name in target_joint_names])
+        else:
+            raise ValueError(
+                f"[ERROR]: Agile One CSV export expected {len(target_joint_names)} no-hands joints "
+                f"or {len(AGILE_ONE_FIXED_TEKKEN2_HANDS_ALIGNED_JOINT_NAMES)} fixed-hands joints, "
+                f"got {len(joint_values)}."
+            )
+
+        return _to_csv_row_with_joints(frame_idx, anim_row, selected_joint_values)
 
 
 def get_csv_config(robot_type: str) -> RobotCSVConfig:
@@ -118,7 +174,12 @@ def get_csv_config(robot_type: str) -> RobotCSVConfig:
     raise ValueError(f"[ERROR]: Unknown robot CSV config type: {robot_type}")
 
 
-def load_csv(file_path: str, fps: float = 120.0, csv_config: RobotCSVConfig = UnitreeG129DOF_CSVConfig()) -> CSVAnimationBuffer:
+def load_csv(
+    file_path: str,
+    fps: float = 120.0,
+    csv_config: RobotCSVConfig = UnitreeG129DOF_CSVConfig(),
+    robot_name: str | None = None,
+) -> CSVAnimationBuffer:
     """
     Load a robot motion CSV file into a ``CSVAnimationBuffer``.
     Args:
@@ -132,7 +193,7 @@ def load_csv(file_path: str, fps: float = 120.0, csv_config: RobotCSVConfig = Un
         FileNotFoundError: If the CSV file at file_path does not exist.
     """
     with open(file_path, 'r', encoding='utf-8') as f:
-        print(f"[INFO]: Loading CSV [{file_path}] for robot [{csv_config.name}]")
+        print(f"[INFO]: Loading CSV [{file_path}] for robot [{robot_name or csv_config.name}]")
         csv_data = np.loadtxt(f, delimiter=",", skiprows=1)
         num_frames = csv_data.shape[0]
 

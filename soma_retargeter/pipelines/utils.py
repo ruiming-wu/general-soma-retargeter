@@ -143,7 +143,7 @@ def get_retargeter_config(source: SourceType, target: TargetType) -> dict:
         filename = 'soma_to_g1_retargeter_config.json'
     elif target == TargetType.AGILE_ONE:
         config_dir = 'agile_one'
-        filename = 'soma_to_agile_one_retargeter_config.json'
+        filename = 'soma_to_ao_triaxial_retargeter_config.json'
     else:
         raise ValueError(f"Unknown target type [{target}].")
 
@@ -154,8 +154,13 @@ def build_robot_builder(target: TargetType, retargeter_config: dict | None = Non
     """Build a Newton robot builder for a retargeting target."""
     builder = newton.ModelBuilder()
     if target == TargetType.UNITREE_G1:
-        builder.add_mjcf(
-            newton.utils.download_asset("unitree_g1") / "mjcf/g1_29dof_rev_1_0.xml")
+        if retargeter_config is not None and retargeter_config.get("robot_mjcf_path"):
+            mjcf_path = Path(retargeter_config["robot_mjcf_path"]).expanduser()
+            if not mjcf_path.exists():
+                raise FileNotFoundError(f"[ERROR]: Unitree G1 MJCF not found: {mjcf_path}")
+        else:
+            mjcf_path = newton.utils.download_asset("unitree_g1") / "mjcf/g1_29dof_rev_1_0.xml"
+        builder.add_mjcf(mjcf_path)
     elif target == TargetType.AGILE_ONE:
         if retargeter_config is None or "robot_mjcf_path" not in retargeter_config:
             raise ValueError("[ERROR]: Agile One target requires robot_mjcf_path in retargeter config.")

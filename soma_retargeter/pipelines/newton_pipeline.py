@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+
 import warp as wp
 import numpy as np
 import newton
@@ -11,7 +13,7 @@ import soma_retargeter.assets.bvh as bvh_utils
 import soma_retargeter.utils.newton_utils as newton_utils
 import soma_retargeter.utils.io_utils as io_utils
 import soma_retargeter.pipelines.utils as pipeline_utils
-from soma_retargeter.pipelines.ik_objectives import IKSmoothJointFilter
+from soma_retargeter.pipelines.ik_objectives import IKJointLimit, IKJointMotionSmooth, IKSmoothJointFilter
 from soma_retargeter.animation.skeleton import Skeleton, SkeletonInstance
 from soma_retargeter.animation.animation_buffer import AnimationBuffer
 from soma_retargeter.robotics.human_to_robot_scaler import HumanToRobotScaler
@@ -22,8 +24,13 @@ from soma_retargeter.pipelines.joint_limit_clamper import JointLimitClamper
 _DEFAULT_IK_SOLVER_ITERATIONS = 24
 _DEFAULT_JOINT_LIMIT_OBJECTIVE_WEIGHT = 10.0
 _DEFAULT_SMOOTH_JOINT_FILTER_OBJECTIVE_WEIGHT = 5.5
+_DEFAULT_JOINT_MOTION_SMOOTH_OBJECTIVE_WEIGHT = 0.0
 _DEFAULT_NUM_INITIALIZATION_FRAMES = 10
 _DEFAULT_NUM_STABILIZATION_FRAMES = 5
+
+
+def _warp_graph_capture_enabled() -> bool:
+    return os.environ.get("SOMA_DISABLE_WARP_GRAPH_CAPTURE", "").lower() not in {"1", "true", "yes", "on"}
 
 
 class NewtonPipeline:
@@ -64,6 +71,10 @@ class NewtonPipeline:
         self.ik_iterations = retargeter_config.get('ik_iterations', _DEFAULT_IK_SOLVER_ITERATIONS)
         self.joint_limit_weight = retargeter_config.get('joint_limit_weight', _DEFAULT_JOINT_LIMIT_OBJECTIVE_WEIGHT)
         self.smooth_joint_filter_weight = retargeter_config.get('smooth_joint_filter_weight', _DEFAULT_SMOOTH_JOINT_FILTER_OBJECTIVE_WEIGHT)
+        self.joint_motion_smooth_weight = retargeter_config.get('joint_motion_smooth_weight', _DEFAULT_JOINT_MOTION_SMOOTH_OBJECTIVE_WEIGHT)
+        self.first_output_frame_ik_repeats = int(retargeter_config.get('first_output_frame_ik_repeats', 1))
+        self.first_output_frame_joint_motion_smooth_weight = retargeter_config.get(
+            'first_output_frame_joint_motion_smooth_weight', None)
         self.post_processing_enabled = retargeter_config.get('enable_post_processing', True)
         self.initial_robot_joint_positions = retargeter_config.get('initial_robot_joint_positions', None)
         self.ground_height_offset = float(retargeter_config.get('ground_height_offset', 0.0))
@@ -75,6 +86,12 @@ class NewtonPipeline:
         self.root_target_translation_offset = np.asarray(root_mapping.get('t_offset', [0.0, 0.0, 0.0]), dtype=np.float32)
         self.enable_self_penetration = False
         self.smooth_joint_filter_coord_masks = None
+        self.joint_motion_smooth_coord_masks = None
+        self.joint_objective_excluded_joint_name_patterns = retargeter_config.get(
+            'joint_objective_excluded_joint_name_patterns', [])
+        self.joint_limit_active_dof_indices = None
+        self.smooth_joint_filter_active_dof_indices = None
+        self.joint_motion_smooth_active_dof_indices = None
         self.joint_limit_clamper = None
 
         self.robot_builder = pipeline_utils.build_robot_builder(self.target_type, retargeter_config)
@@ -100,6 +117,38 @@ class NewtonPipeline:
         if smooth_joint_filter_objective_body_masks is not None:
             self.smooth_joint_filter_coord_masks = newton_utils.create_joint_coord_masks(
                 self.ik_model, smooth_joint_filter_objective_body_masks, 0.0)
+
+        joint_motion_smooth_objective_body_masks = retargeter_config.get('joint_motion_smooth_objective_body_masks', None)
+        if joint_motion_smooth_objective_body_masks is not None:
+            self.joint_motion_smooth_coord_masks = newton_utils.create_joint_coord_masks(
+                self.ik_model, joint_motion_smooth_objective_body_masks, 0.0)
+
+        if self.joint_objective_excluded_joint_name_patterns:
+            self.joint_limit_active_dof_indices = newton_utils.create_active_dof_indices(
+                self.ik_model,
+                exclude_joint_name_patterns=self.joint_objective_excluded_joint_name_patterns)
+            self.smooth_joint_filter_active_dof_indices = newton_utils.create_active_dof_indices(
+                self.ik_model,
+                exclude_joint_name_patterns=self.joint_objective_excluded_joint_name_patterns,
+                coord_masks=self.smooth_joint_filter_coord_masks)
+            self.joint_motion_smooth_active_dof_indices = newton_utils.create_active_dof_indices(
+                self.ik_model,
+                exclude_joint_name_patterns=self.joint_objective_excluded_joint_name_patterns,
+                coord_masks=self.joint_motion_smooth_coord_masks)
+        if (
+            not self.joint_objective_excluded_joint_name_patterns
+            and self.smooth_joint_filter_coord_masks is not None
+        ):
+            self.smooth_joint_filter_active_dof_indices = newton_utils.create_active_dof_indices(
+                self.ik_model,
+                coord_masks=self.smooth_joint_filter_coord_masks)
+        if (
+            not self.joint_objective_excluded_joint_name_patterns
+            and self.joint_motion_smooth_coord_masks is not None
+        ):
+            self.joint_motion_smooth_active_dof_indices = newton_utils.create_active_dof_indices(
+                self.ik_model,
+                coord_masks=self.joint_motion_smooth_coord_masks)
 
         effector_names = self.human_robot_scaler.effector_names()
         self.target_effector_indices = [effector_names.index(name) for name in self.mapped_joints]
@@ -185,6 +234,8 @@ class NewtonPipeline:
         self.ik_iterations = max(1, self.ik_iterations)
         self.joint_limit_weight = max(0.0, self.joint_limit_weight)
         self.smooth_joint_filter_weight = max(0.0, self.smooth_joint_filter_weight)
+        self.joint_motion_smooth_weight = max(0.0, self.joint_motion_smooth_weight)
+        self.first_output_frame_ik_repeats = max(1, self.first_output_frame_ik_repeats)
 
         print("[INFO] Newton Retargeter Settings: ")
         print(f"[INFO]\t  Source Skeleton Type: {pipeline_utils.get_source_str_from_type(self.source_type)}")
@@ -198,6 +249,12 @@ class NewtonPipeline:
         print(f"[INFO]\t  IK Solver Iterations: {self.ik_iterations}")
         print(f"[INFO]\t  Joint Limit Objective Weight: {self.joint_limit_weight}")
         print(f"[INFO]\t  Smooth Joint Filter Objective Weight: {self.smooth_joint_filter_weight}")
+        print(f"[INFO]\t  Joint Motion Smooth Objective Weight: {self.joint_motion_smooth_weight}")
+        print(f"[INFO]\t  First Output Frame IK Repeats: {self.first_output_frame_ik_repeats}")
+        print(
+            "[INFO]\t  First Output Frame Joint Motion Smooth Objective Weight: "
+            f"{self.first_output_frame_joint_motion_smooth_weight}"
+        )
 
         model = self._build_model(num_envs)
         self._apply_initial_robot_joint_positions(model, num_envs)
@@ -211,7 +268,8 @@ class NewtonPipeline:
             position_objectives,
             rotation_objectives,
             joint_limit_objective,
-            smooth_joint_filter_objective
+            smooth_joint_filter_objective,
+            joint_motion_smooth_objective,
         ) = self._create_ik_objectives(num_envs, model, state)
 
         # Add optional objectives
@@ -220,6 +278,8 @@ class NewtonPipeline:
             ik_solver_active_objectives.append(joint_limit_objective)
         if self.smooth_joint_filter_weight > 0.0:
             ik_solver_active_objectives.append(smooth_joint_filter_objective)
+        if self.joint_motion_smooth_weight > 0.0:
+            ik_solver_active_objectives.append(joint_motion_smooth_objective)
 
         ik_solver = ik.IKSolver(
             model=self.ik_model,
@@ -239,7 +299,7 @@ class NewtonPipeline:
         def single_step():
             ik_solver.step(joint_q, joint_q, iterations=self.ik_iterations)
 
-        if wp.get_device().is_cuda:
+        if wp.get_device().is_cuda and _warp_graph_capture_enabled():
             with wp.ScopedCapture() as cap:
                 single_step()
             graph_capture = cap.graph
@@ -250,10 +310,20 @@ class NewtonPipeline:
         num_frames_to_remove = self.num_initialization_frames + self.num_stabilization_frames
         joint_q_data = [np.full((len(self.input_targets[i]),), None) for i in range(num_envs)]
         for frame in trange(self.max_frames, desc="[INFO] Retargeting Motions"):
-            if frame <= num_frames_to_remove:
+            if num_frames_to_remove > 0 and frame <= num_frames_to_remove:
                 smooth_joint_filter_objective.set_weight(self.smooth_joint_filter_weight * (frame / float(num_frames_to_remove)))
 
             #start_time = time.time()
+            if self.joint_motion_smooth_weight > 0.0:
+                joint_motion_smooth_weight = self.joint_motion_smooth_weight
+                if (
+                    frame == num_frames_to_remove
+                    and self.first_output_frame_joint_motion_smooth_weight is not None
+                ):
+                    joint_motion_smooth_weight = max(0.0, float(self.first_output_frame_joint_motion_smooth_weight))
+                joint_motion_smooth_objective.set_weight(joint_motion_smooth_weight)
+                joint_motion_smooth_objective.set_target_joint_q(joint_q)
+
             for env in range(num_envs):
                 if frame > (len(self.input_targets[env])-1):
                     continue
@@ -262,10 +332,12 @@ class NewtonPipeline:
                     position_objectives[i].set_target_position(env, wp.vec3(*target[0:3]))
                     rotation_objectives[i].set_target_rotation(env, wp.quat(*target[3:7]))
 
-            if graph_capture is not None:
-                wp.capture_launch(graph_capture)
-            else:
-                single_step()
+            ik_repeats = self.first_output_frame_ik_repeats if frame == num_frames_to_remove else 1
+            for _ in range(ik_repeats):
+                if graph_capture is not None:
+                    wp.capture_launch(graph_capture)
+                else:
+                    single_step()
 
             data = None
             if self.post_processing_enabled:
@@ -379,7 +451,10 @@ class NewtonPipeline:
         mapped_body_link_pos_data = []
         mapped_body_link_rot_data = []
         body_names = [newton_utils.get_name_from_label(label) for label in self.robot_builder.body_label]
+        excluded_target_names = set(retargeter_config.get("ik_map_excluded_target_names", []))
         for joint, mapping_data in retargeter_config["ik_map"].items():
+            if joint in excluded_target_names:
+                continue
             mapped_joints.append(joint)
             mapped_joint_indices.append(skeleton.joint_index(joint))
             mapped_body_link_pos_data.append((body_names.index(mapping_data['t_body']), mapping_data['t_weight']))
@@ -440,16 +515,30 @@ class NewtonPipeline:
                 weight=w)
             rotation_objectives.append(objective)
 
-        joint_limit_objective = ik.IKObjectiveJointLimit(
+        joint_limit_objective = IKJointLimit(
             joint_limit_lower=self.ik_model.joint_limit_lower,
             joint_limit_upper=self.ik_model.joint_limit_upper,
-            weight=self.joint_limit_weight)
+            weight=self.joint_limit_weight,
+            active_dof_indices=self.joint_limit_active_dof_indices)
 
         # Weight is set to desired value once initialization frames have been processed
         smooth_joint_limiter_objective = IKSmoothJointFilter(
             joint_limit_lower=self.ik_model.joint_limit_lower,
             joint_limit_upper=self.ik_model.joint_limit_upper,
             weight=0.0,
-            coord_masks=self.smooth_joint_filter_coord_masks)
+            coord_masks=self.smooth_joint_filter_coord_masks,
+            active_dof_indices=self.smooth_joint_filter_active_dof_indices)
 
-        return position_objectives, rotation_objectives, joint_limit_objective, smooth_joint_limiter_objective
+        joint_motion_smooth_objective = IKJointMotionSmooth(
+            joint_limit_lower=self.ik_model.joint_limit_lower,
+            weight=self.joint_motion_smooth_weight,
+            coord_masks=self.joint_motion_smooth_coord_masks,
+            active_dof_indices=self.joint_motion_smooth_active_dof_indices)
+
+        return (
+            position_objectives,
+            rotation_objectives,
+            joint_limit_objective,
+            smooth_joint_limiter_objective,
+            joint_motion_smooth_objective,
+        )

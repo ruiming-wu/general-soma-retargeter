@@ -1,8 +1,16 @@
 {
     "robot_type": "agile_one",
-    "robot_mjcf_path": "/home/ruiming.wu/codes/H4/mjcf/agile_one_no_hands.xml",
+    "robot_mjcf_path": "/home/ruiming.wu/codes/H4/mjcf/h4_mjlab.xml",
     "ik_iterations": 20,
     "joint_limit_weight": 10.0,
+    "joint_objective_excluded_joint_name_patterns": [
+        "thumb",
+        "index",
+        "middle",
+        "ring",
+        "little",
+        "follower"
+    ],
 
     "effectors": {
         "pelvis_link"           : [30.0,  8.0],

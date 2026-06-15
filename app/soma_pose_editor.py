@@ -215,7 +215,7 @@ class SomaPoseEditor:
         offset_rot = reference_rot.inv() * current_rot
         self.euler_deg[joint_index] = offset_rot.as_euler("xyz", degrees=True).astype(np.float32)
 
-    def _align_joint_rotation_to_root(self, joint_index: int) -> None:
+    def _align_joint_rotation_to_root_90_grid(self, joint_index: int) -> None:
         if joint_index == 0:
             self.euler_deg[0] = np.zeros(3, dtype=np.float32)
             self.current_local[0, 3:7] = self.reference_local[0, 3:7]
@@ -224,9 +224,16 @@ class SomaPoseEditor:
 
         global_transforms = self.instance.compute_global_transforms()
         root_global_rot = R.from_quat(self._normalized_quat(global_transforms[0, 3:7]))
+        joint_global_rot = R.from_quat(self._normalized_quat(global_transforms[joint_index, 3:7]))
         parent_index = int(self.skeleton.joint_parent(joint_index))
         parent_global_rot = R.from_quat(self._normalized_quat(global_transforms[parent_index, 3:7]))
-        target_local_rot = parent_global_rot.inv() * root_global_rot
+
+        relative_to_root = root_global_rot.inv() * joint_global_rot
+        relative_euler_deg = relative_to_root.as_euler("xyz", degrees=True)
+        snapped_relative_euler_deg = np.round(relative_euler_deg / 90.0) * 90.0
+        target_global_rot = root_global_rot * R.from_euler("xyz", snapped_relative_euler_deg, degrees=True)
+        target_local_rot = parent_global_rot.inv() * target_global_rot
+
         self.current_local[joint_index, 3:7] = target_local_rot.as_quat().astype(np.float32)
         self._sync_joint_euler_from_local(joint_index)
         self.instance.set_local_transforms(self.current_local)
@@ -382,8 +389,8 @@ class SomaPoseEditor:
                 ui.text("Root frame is the alignment reference.")
                 if ui.button("Snap root rotation to world 90 deg grid"):
                     self._snap_root_rotation_to_world_90_grid()
-            elif ui.button("Align rotation to root frame"):
-                self._align_joint_rotation_to_root(joint_index)
+            elif ui.button("Align rotation to root 90 deg grid"):
+                self._align_joint_rotation_to_root_90_grid(joint_index)
             for axis_idx, axis_name in enumerate(("rx", "ry", "rz")):
                 changed, value = self._slider_input_float(
                     ui,

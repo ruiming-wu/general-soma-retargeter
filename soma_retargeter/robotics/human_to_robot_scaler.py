@@ -10,6 +10,14 @@ from soma_retargeter.animation.skeleton import Skeleton, SkeletonInstance
 from soma_retargeter.animation.animation_buffer import AnimationBuffer
 
 
+def _scale_to_vec3(value, ratio):
+    if isinstance(value, (list, tuple)):
+        if len(value) != 3:
+            raise ValueError(f"joint_scales entries must be floats or length-3 lists, got: {value}")
+        return wp.vec3(float(value[0]) * ratio, float(value[1]) * ratio, float(value[2]) * ratio)
+    return wp.vec3(float(value) * ratio, float(value) * ratio, float(value) * ratio)
+
+
 class HumanToRobotScaler:
     """
     Scale and map human motion to robot-aligned effectors.
@@ -20,9 +28,10 @@ class HumanToRobotScaler:
         self.skeleton = skeleton
 
         ratio = human_height / config['human_height_assumption']
-        joint_scales = config['joint_scales']
-        for key in joint_scales.keys():
-            joint_scales[key] *= ratio
+        joint_scales = {
+            key: _scale_to_vec3(value, ratio)
+            for key, value in config['joint_scales'].items()
+        }
 
         joint_offsets = {}
         joint_offset_data = config['joint_offsets']
@@ -47,7 +56,7 @@ class HumanToRobotScaler:
         if missing_offsets:
             raise ValueError(f"Scaler config is missing joint_offsets for mapped joints: {missing_offsets}")
         self.mapped_joint_indices = wp.array([self.skeleton.joint_index(name) for name in self.mapped_joints], dtype=wp.int32)
-        self.mapped_joint_scales = wp.array([joint_scales[name] for name in self.mapped_joints], dtype=wp.float32)
+        self.mapped_joint_scales = wp.array([joint_scales[name] for name in self.mapped_joints], dtype=wp.vec3)
         self.mapped_joint_offsets = wp.array([joint_offsets[name] for name in self.mapped_joints], dtype=wp.transform)
 
         joint_parents = config['joint_parents']
@@ -102,7 +111,7 @@ class HumanToRobotScaler:
             in_num_mapped_joints    : wp.int32,
             in_global_pose          : wp.array(dtype=wp.transform),
             in_mapped_joint_indices : wp.array(dtype=wp.int32),
-            in_mapped_joint_scales  : wp.array(dtype=wp.float32),
+            in_mapped_joint_scales  : wp.array(dtype=wp.vec3),
             in_mapped_joint_offsets : wp.array(dtype=wp.transform),
             in_scale_animation      : wp.bool,
             out_result              : wp.array(dtype=wp.transform)
@@ -178,7 +187,7 @@ class HumanToRobotScaler:
             in_num_mapped_joints    : wp.int32,
             in_global_pose          : wp.array2d(dtype=wp.transform),
             in_mapped_joint_indices : wp.array(dtype=wp.int32),
-            in_mapped_joint_scales  : wp.array(dtype=wp.float32),
+            in_mapped_joint_scales  : wp.array(dtype=wp.vec3),
             in_mapped_joint_offsets : wp.array(dtype=wp.transform),
             in_scale_animation      : wp.bool,
             out_result              : wp.array2d(dtype=wp.transform)
@@ -256,14 +265,19 @@ class HumanToRobotScaler:
         in_num_mapped_joints    : wp.int32,
         in_global_pose          : wp.array(dtype=wp.transform),
         in_mapped_joint_indices : wp.array(dtype=wp.int32),
-        in_mapped_joint_scales  : wp.array(dtype=wp.float32),
+        in_mapped_joint_scales  : wp.array(dtype=wp.vec3),
         in_mapped_joint_offsets : wp.array(dtype=wp.transform),
         in_scale_animation      : wp.bool,
         out_result              : wp.array(dtype=wp.transform)
     ):
         root_t = in_global_pose[in_mapped_joint_indices[0]].p
 
-        scale = wp.where(in_scale_animation, wp.vec3(in_mapped_joint_scales[0]), wp.vec3(1.0, 1.0, in_mapped_joint_scales[0]))
+        root_q = in_global_pose[in_mapped_joint_indices[0]].q
+        root_q_inv = wp.quat_inverse(root_q)
+
+        root_scale = in_mapped_joint_scales[0]
+        fallback_root_scale = wp.vec3(1.0, 1.0, root_scale[2])
+        scale = wp.where(in_scale_animation, root_scale, fallback_root_scale)
         scaled_root_t = wp.cw_mul(root_t, scale)
 
         for i in range(in_num_mapped_joints):
@@ -271,8 +285,11 @@ class HumanToRobotScaler:
             pose_tx = in_global_pose[idx]
             offset_tx = in_mapped_joint_offsets[i]
 
-            scale = wp.where(in_scale_animation, wp.vec3(in_mapped_joint_scales[i]), wp.vec3(1.0, 1.0, in_mapped_joint_scales[i]))
-            geocentric_scaled_t = wp.cw_mul((pose_tx.p - root_t), scale)
+            joint_scale = in_mapped_joint_scales[i]
+            fallback_joint_scale = wp.vec3(1.0, 1.0, joint_scale[2])
+            scale = wp.where(in_scale_animation, joint_scale, fallback_joint_scale)
+            root_local_t = wp.quat_rotate(root_q_inv, pose_tx.p - root_t)
+            geocentric_scaled_t = wp.quat_rotate(root_q, wp.cw_mul(root_local_t, scale))
 
             q = wp.mul(pose_tx.q, offset_tx.q)
             t = geocentric_scaled_t + scaled_root_t + wp.quat_rotate(q, offset_tx.p)

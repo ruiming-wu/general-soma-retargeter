@@ -44,8 +44,8 @@ _ROBOT_CONFIG_DEFAULTS = {
         "unitree_g1/soma_to_g1_scaler_config.json",
     ),
     "agile_one": (
-        "agile_one/soma_to_agile_one_retargeter_config.json",
-        "agile_one/soma_to_agile_one_scaler_config.json",
+        "agile_one/soma_to_ao_triaxial_retargeter_config.json",
+        "agile_one/soma_to_ao_triaxial_scaler_config.json",
     ),
 }
 
@@ -59,6 +59,7 @@ _AXIS_SCALE = 0.08
 _AXIS_THICKNESS = 0.006
 _POS_WARN_M = 0.05
 _ROT_WARN_DEG = 15.0
+_SCALE_AXIS_LABELS = ("sx", "sy", "sz")
 _AXIS_COLORS = (
     (1.0, 0.05, 0.05),
     (0.05, 1.0, 0.05),
@@ -195,9 +196,7 @@ class SomaRobotOffsetCalibrator:
         self.base_scaler_path = self._resolve_config_path(scaler_config)
         self.base_scaler_config = self._load_json(self.base_scaler_path)
 
-        self.preview_joint_scales = {
-            name: float(value) for name, value in self.base_scaler_config.get("joint_scales", {}).items()
-        }
+        self._load_preview_joint_scales()
         self.preview_joint_offsets_t = {}
         self.preview_joint_offsets_rpy = {}
         self.preview_show_names = {}
@@ -233,9 +232,7 @@ class SomaRobotOffsetCalibrator:
         raise ValueError(f"No default MJCF is configured for robot_type [{self.robot_type}]. Pass --robot_mjcf explicitly.")
 
     def _reset_preview_config(self) -> None:
-        self.preview_joint_scales = {
-            name: float(value) for name, value in self.base_scaler_config.get("joint_scales", {}).items()
-        }
+        self._load_preview_joint_scales()
         self.preview_joint_offsets_t = {}
         self.preview_joint_offsets_rpy = {}
         for name, entry in self.base_scaler_config.get("joint_offsets", {}).items():
@@ -243,6 +240,48 @@ class SomaRobotOffsetCalibrator:
             self.preview_joint_offsets_t[name] = np.asarray(t_offset, dtype=np.float32)
             self.preview_joint_offsets_rpy[name] = R.from_quat(q_offset).as_euler("xyz", degrees=True).astype(np.float32)
         self.preview_report = self._compute_preview_report()
+
+    @staticmethod
+    def _scale_value_to_vec3(value) -> tuple[np.ndarray, bool]:
+        if isinstance(value, (list, tuple, np.ndarray)):
+            if len(value) != 3:
+                raise ValueError(f"joint_scales entries must be floats or length-3 lists, got: {value}")
+            return np.asarray([float(value[0]), float(value[1]), float(value[2])], dtype=np.float32), True
+        scalar = float(value)
+        return np.asarray([scalar, scalar, scalar], dtype=np.float32), False
+
+    @staticmethod
+    def _scale_vec_to_config_value(scale_vec: np.ndarray, triaxial: bool):
+        scale_vec = np.asarray(scale_vec, dtype=np.float32)
+        if triaxial:
+            return [float(scale_vec[0]), float(scale_vec[1]), float(scale_vec[2])]
+        return float(scale_vec[0])
+
+    @staticmethod
+    def _format_scale(scale) -> str:
+        if isinstance(scale, (list, tuple, np.ndarray)):
+            return "[" + ", ".join(f"{float(x):.4f}" for x in scale) + "]"
+        return f"{float(scale):.4f}"
+
+    def _load_preview_joint_scales(self) -> None:
+        self.preview_joint_scales = {}
+        self.preview_joint_scale_is_triaxial = {}
+        for name, value in self.base_scaler_config.get("joint_scales", {}).items():
+            scale_vec, is_triaxial = self._scale_value_to_vec3(value)
+            self.preview_joint_scales[name] = scale_vec
+            self.preview_joint_scale_is_triaxial[name] = is_triaxial
+
+    def _preview_scale_config_value(self, joint_name: str):
+        return self._scale_vec_to_config_value(
+            self.preview_joint_scales[joint_name],
+            self.preview_joint_scale_is_triaxial.get(joint_name, False),
+        )
+
+    def _effective_scale_config_value(self, joint_name: str):
+        return self._scale_vec_to_config_value(
+            self._effective_scale(joint_name),
+            self.preview_joint_scale_is_triaxial.get(joint_name, False),
+        )
 
     @staticmethod
     def _load_json(path: Path) -> dict:
@@ -412,25 +451,27 @@ class SomaRobotOffsetCalibrator:
         model_height = float(self.base_retargeter_config.get("model_height", human_height_assumption))
         return model_height / human_height_assumption
 
-    def _effective_scale(self, joint_name: str) -> float:
-        return float(self.preview_joint_scales[joint_name]) * self._height_ratio()
+    def _effective_scale(self, joint_name: str) -> np.ndarray:
+        return self.preview_joint_scales[joint_name] * self._height_ratio()
 
     def _preview_global_transforms_np(self) -> np.ndarray:
         return pose_utils.compute_global_pose(self.skeleton, self.preview_current_local, self.preview_instance.xform)
 
-    def _preview_scaling_reference(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _preview_scaling_reference(self) -> tuple[np.ndarray, np.ndarray, R, np.ndarray]:
         original_global = self._soma_global_transforms_np()
         root_name = self.base_scaler_config.get("human_root_name", "Hips")
         root_idx = self.skeleton.joint_index(root_name)
         if root_idx == -1:
             root_idx = self.skeleton.joint_index("Hips")
         root_t = original_global[root_idx, :3] if root_idx != -1 else original_global[0, :3]
-        root_scale = self._effective_scale(root_name) if root_name in self.preview_joint_scales else 1.0
-        return original_global, root_t, root_t * root_scale
+        root_q = original_global[root_idx, 3:7] if root_idx != -1 else original_global[0, 3:7]
+        root_rot = R.from_quat(root_q)
+        root_scale = self._effective_scale(root_name) if root_name in self.preview_joint_scales else np.ones(3, dtype=np.float32)
+        return original_global, root_t, root_rot, root_t * root_scale
 
     def _preview_effector_transforms(self) -> dict[str, np.ndarray]:
         """Config-space preview targets: scale + translation offset + rotation offset."""
-        original_global, root_t, scaled_root_t = self._preview_scaling_reference()
+        original_global, root_t, root_rot, scaled_root_t = self._preview_scaling_reference()
         effectors: dict[str, np.ndarray] = {}
         for joint_name in self.preview_joint_names:
             joint_idx = self.skeleton.joint_index(joint_name)
@@ -441,7 +482,8 @@ class SomaRobotOffsetCalibrator:
             offset_rot = R.from_euler("xyz", self.preview_joint_offsets_rpy[joint_name], degrees=True)
             target_rot = pose_rot * offset_rot
             scale = self._effective_scale(joint_name)
-            target_t = (pose[:3] - root_t) * scale + scaled_root_t
+            root_local_t = root_rot.inv().apply(pose[:3] - root_t)
+            target_t = root_rot.apply(root_local_t * scale) + scaled_root_t
             target_t = target_t + target_rot.apply(self.preview_joint_offsets_t[joint_name])
             effectors[joint_name] = self._compose_transform(
                 target_t.astype(np.float32),
@@ -481,7 +523,7 @@ class SomaRobotOffsetCalibrator:
 
     def _sync_preview_avatar(self) -> None:
         self.preview_instance.xform = self.soma_instance.xform
-        original_global, root_t, scaled_root_t = self._preview_scaling_reference()
+        original_global, root_t, root_rot, scaled_root_t = self._preview_scaling_reference()
         preview_global = np.copy(original_global)
 
         for joint_name in self.preview_joint_names:
@@ -491,7 +533,8 @@ class SomaRobotOffsetCalibrator:
             pose = original_global[joint_idx]
             pose_rot = R.from_quat(pose[3:7])
             scale = self._effective_scale(joint_name)
-            target_t = (pose[:3] - root_t) * scale + scaled_root_t
+            root_local_t = root_rot.inv().apply(pose[:3] - root_t)
+            target_t = root_rot.apply(root_local_t * scale) + scaled_root_t
             target_t = target_t + pose_rot.apply(self.preview_joint_offsets_t[joint_name])
             target_tx = self._compose_transform(target_t.astype(np.float32), pose[3:7].astype(np.float32))
             delta = self._transform_multiply(target_tx, self._transform_inverse(preview_global[joint_idx]))
@@ -533,8 +576,8 @@ class SomaRobotOffsetCalibrator:
                     "r_body": mapping["r_body"],
                     "position_error_m": pos_error,
                     "rotation_error_deg": rot_error,
-                    "scale": float(self.preview_joint_scales.get(joint_name, 1.0)),
-                    "effective_scale": float(self._effective_scale(joint_name)) if joint_name in self.preview_joint_scales else 1.0,
+                    "scale": self._preview_scale_config_value(joint_name),
+                    "effective_scale": self._effective_scale_config_value(joint_name) if joint_name in self.preview_joint_scales else 1.0,
                     "translation_offset": self.preview_joint_offsets_t.get(joint_name, np.zeros(3)).astype(float).tolist(),
                     "rotation_offset_rpy_deg": self.preview_joint_offsets_rpy.get(joint_name, np.zeros(3)).astype(float).tolist(),
                     "warning": pos_error > _POS_WARN_M or rot_error > _ROT_WARN_DEG,
@@ -560,7 +603,7 @@ class SomaRobotOffsetCalibrator:
         config = copy.deepcopy(self.base_scaler_config)
         config["robot_type"] = self.robot_type
         config["joint_scales"] = {
-            name: float(self.preview_joint_scales[name])
+            name: self._preview_scale_config_value(name)
             for name in config.get("joint_scales", {}).keys()
             if name in self.preview_joint_scales
         }
@@ -684,7 +727,7 @@ class SomaRobotOffsetCalibrator:
             lines.append(
                 f"| {item['joint']} | {item['t_body']} | {item['r_body']} | "
                 f"{item['position_error_m']:.4f} | {item['rotation_error_deg']:.2f} | "
-                f"{item['scale']:.4f} | {'YES' if item['warning'] else ''} |"
+                f"{self._format_scale(item['scale'])} | {'YES' if item['warning'] else ''} |"
             )
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1182,17 +1225,32 @@ class SomaRobotOffsetCalibrator:
             ui.same_line()
             _, self.preview_show_axes[joint_name] = ui.checkbox("Axis", bool(self.preview_show_axes[joint_name]))
 
-            changed, value = self._slider_input_float(
-                ui,
-                "scale",
-                self.preview_joint_scales[joint_name],
-                0.3,
-                1.5,
-                "%.4f",
-                _SIDE_PANEL_WIDTH,
-            )
-            if changed:
-                self.preview_joint_scales[joint_name] = value
+            scale_vec = self.preview_joint_scales[joint_name]
+            if self.preview_joint_scale_is_triaxial.get(joint_name, False):
+                for axis_idx, axis_name in enumerate(_SCALE_AXIS_LABELS):
+                    changed, value = self._slider_input_float(
+                        ui,
+                        axis_name,
+                        float(scale_vec[axis_idx]),
+                        0.3,
+                        1.5,
+                        "%.4f",
+                        _SIDE_PANEL_WIDTH,
+                    )
+                    if changed:
+                        scale_vec[axis_idx] = value
+            else:
+                changed, value = self._slider_input_float(
+                    ui,
+                    "scale",
+                    float(scale_vec[0]),
+                    0.3,
+                    1.5,
+                    "%.4f",
+                    _SIDE_PANEL_WIDTH,
+                )
+                if changed:
+                    scale_vec[:] = value
 
             for axis_idx, axis_name in enumerate(("tx", "ty", "tz")):
                 changed, value = self._slider_input_float(

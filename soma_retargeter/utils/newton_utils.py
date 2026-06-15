@@ -61,6 +61,46 @@ def create_joint_coord_masks(model, active_body_masks, default_mask_fill_value):
     return mask_np
 
 
+def create_active_dof_indices(
+        model,
+        exclude_joint_name_patterns=None,
+        include_joint_name_patterns=None,
+        coord_masks=None):
+    """Return model DOF indices that should contribute residual rows.
+
+    This is stricter than multiplying residuals by a coordinate mask: excluded
+    DOFs are removed from the objective's residual dimension entirely, which
+    keeps Newton/LM kernels small for robots with many passive hand joints.
+    """
+    exclude_patterns = [p.lower() for p in (exclude_joint_name_patterns or [])]
+    include_patterns = [p.lower() for p in (include_joint_name_patterns or [])]
+    coord_masks_np = None if coord_masks is None else np.asarray(coord_masks, dtype=np.float32)
+
+    active_dofs = []
+    joint_q_start_np = model.joint_q_start.numpy()
+    joint_qd_start_np = model.joint_qd_start.numpy()
+    joint_dof_dim_np = model.joint_dof_dim.numpy()
+    joint_names = [get_name_from_label(label).lower() for label in model.joint_label]
+
+    for joint_id, joint_name in enumerate(joint_names):
+        if exclude_patterns and any(pattern in joint_name for pattern in exclude_patterns):
+            continue
+        if include_patterns and not any(pattern in joint_name for pattern in include_patterns):
+            continue
+
+        dof_start = int(joint_qd_start_np[joint_id])
+        coord_start = int(joint_q_start_np[joint_id])
+        lin_dim, ang_dim = joint_dof_dim_np[joint_id]
+        for local_idx in range(int(lin_dim + ang_dim)):
+            coord_idx = coord_start + local_idx
+            if coord_masks_np is not None:
+                if coord_idx >= len(coord_masks_np) or coord_masks_np[coord_idx] <= 0.0:
+                    continue
+            active_dofs.append(dof_start + local_idx)
+
+    return np.asarray(active_dofs, dtype=np.int32)
+
+
 def create_buffer_with_initialization_frames(
         init_pose: SkeletonInstance,
         animation_buffer: AnimationBuffer,

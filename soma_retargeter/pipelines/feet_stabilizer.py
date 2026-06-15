@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+
 import warp as wp
 
 import newton
@@ -8,11 +10,16 @@ import soma_retargeter.utils.newton_utils as newton_utils
 import soma_retargeter.animation.ik as ik_utils
 import soma_retargeter.utils.io_utils as io_utils
 import soma_retargeter.pipelines.utils as pipeline_utils
+from soma_retargeter.pipelines.ik_objectives import IKJointLimit
 
 _LIMB_DATA_IDX_NAME = 0
 _LIMB_DATA_IDX_EFFECTOR_INDICES = 1
 _LIMB_DATA_IDX_HINT_REF = 2
 _LIMB_DATA_IDX_HINT_OFFSET = 3
+
+
+def _warp_graph_capture_enabled() -> bool:
+    return os.environ.get("SOMA_DISABLE_WARP_GRAPH_CAPTURE", "").lower() not in {"1", "true", "yes", "on"}
 
 
 class FeetStabilizer:
@@ -175,6 +182,8 @@ class FeetStabilizer:
         self.robot_type = data['robot_type']
         self.ik_iterations = data['ik_iterations']
         self.joint_limit_weight = data['joint_limit_weight']
+        self.joint_objective_excluded_joint_name_patterns = data.get(
+            'joint_objective_excluded_joint_name_patterns', [])
 
         self.effectors = data['effectors']
         self.num_effectors = len(self.effectors)
@@ -216,10 +225,17 @@ class FeetStabilizer:
                 )
 
         # Joint limit objective
-        self.joint_limit_objective = newton.ik.IKObjectiveJointLimit(
+        joint_limit_active_dof_indices = None
+        if self.joint_objective_excluded_joint_name_patterns:
+            joint_limit_active_dof_indices = newton_utils.create_active_dof_indices(
+                self.ik_model,
+                exclude_joint_name_patterns=self.joint_objective_excluded_joint_name_patterns)
+
+        self.joint_limit_objective = IKJointLimit(
             joint_limit_lower=self.ik_model.joint_limit_lower,
             joint_limit_upper=self.ik_model.joint_limit_upper,
-            weight=self.joint_limit_weight)
+            weight=self.joint_limit_weight,
+            active_dof_indices=joint_limit_active_dof_indices)
 
         ik_objectives = [*self.position_objectives, *self.rotation_objectives]
         if self.joint_limit_weight > 0.0:
@@ -234,7 +250,7 @@ class FeetStabilizer:
 
         self.ik_solver.reset()
         self.captured_graph = None
-        if wp.get_device().is_cuda:
+        if wp.get_device().is_cuda and _warp_graph_capture_enabled():
             with wp.ScopedCapture() as cap:
                 self.ik_solver.step(self.joint_q, self.joint_q, iterations=self.ik_iterations)
             self.captured_graph = cap.graph

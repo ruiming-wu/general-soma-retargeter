@@ -34,8 +34,8 @@ _ROBOT_CONFIG_DEFAULTS = {
         "unitree_g1/soma_to_g1_scaler_config.json",
     ),
     "agile_one": (
-        "agile_one/soma_to_agile_one_retargeter_config.json",
-        "agile_one/soma_to_agile_one_scaler_config.json",
+        "agile_one/soma_to_ao_triaxial_retargeter_config.json",
+        "agile_one/soma_to_ao_triaxial_scaler_config.json",
     ),
 }
 
@@ -233,16 +233,41 @@ def _symmetric_partner(joint_name: str) -> str | None:
     return None
 
 
+def _as_scale_vector(value, height_ratio: float) -> np.ndarray:
+    if isinstance(value, (list, tuple)):
+        if len(value) != 3:
+            raise ValueError(f"Scale entries must be floats or length-3 lists, got: {value}")
+        return np.asarray(value, dtype=np.float64) * height_ratio
+    return np.full(3, float(value) * height_ratio, dtype=np.float64)
+
+
+def _scale_report_value(value: np.ndarray | float) -> float | list[float]:
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.shape == ():
+        return float(arr)
+    if arr.shape == (3,) and float(np.max(np.abs(arr - arr[0]))) < 1e-9:
+        return float(arr[0])
+    return [float(x) for x in arr.reshape(3)]
+
+
+def _format_scale_for_md(value) -> str:
+    if isinstance(value, list):
+        return "[" + ", ".join(f"{float(x):.5f}" for x in value) + "]"
+    return f"{float(value):.5f}"
+
+
 def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: dict, args) -> tuple[dict, dict]:
     human_height_assumption = float(scaler_config.get("human_height_assumption", 1.8))
     model_height = float(retargeter_config.get("model_height", human_height_assumption))
     height_ratio = model_height / human_height_assumption
     root_name = scaler_config.get("human_root_name", args.human_root_name)
     base_scales = scaler_config.get("joint_scales", {})
-    root_scale_config = float(args.root_scale) if args.root_scale is not None else float(base_scales.get(root_name, 1.0))
+    root_scale_config = float(args.root_scale) if args.root_scale is not None else float(np.mean(_as_scale_vector(base_scales.get(root_name, 1.0), 1.0)))
     root_scale_eff = root_scale_config * height_ratio
+    root_scale_eff_vec = np.full(3, root_scale_eff, dtype=np.float64)
     root_translation_offset_world = np.zeros(3, dtype=np.float64)
     root_align_positions = bool(getattr(args, "root_align_positions", True))
+    anisotropic_scale = bool(getattr(args, "anisotropic_scale", False))
 
     solved_scaler = copy.deepcopy(scaler_config)
     solved_scaler["joint_scales"] = copy.deepcopy(scaler_config.get("joint_scales", {}))
@@ -256,6 +281,7 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
         "root_position_offset_storage": "retargeter_config.ik_map.<root>.t_offset_world_xy",
         "height_ratio": height_ratio,
         "symmetric_scale_tying": True,
+        "anisotropic_scale": anisotropic_scale,
         "joints": [],
     }
 
@@ -281,6 +307,7 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
             unclamped_root_scale_eff = float(np.dot(human_z[valid], robot_z[valid]) / np.dot(human_z[valid], human_z[valid]))
             root_scale_eff = float(np.clip(unclamped_root_scale_eff, args.scale_min * height_ratio, args.scale_max * height_ratio))
             root_scale_config = float(root_scale_eff / height_ratio)
+            root_scale_eff_vec = np.full(3, root_scale_eff, dtype=np.float64)
     if root_obs:
         xy_offsets = []
         for item in root_obs:
@@ -291,7 +318,33 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
     report["root_scale_effective"] = root_scale_eff
     report["root_translation_offset_world_xy"] = [float(x) for x in root_translation_offset_world]
 
-    def refit_offset_for_scale(joint_name: str, scale_eff: float) -> np.ndarray:
+    def root_frame_scaled_delta(item: dict, delta_world: np.ndarray, scale_eff: np.ndarray) -> np.ndarray:
+        if not anisotropic_scale:
+            return delta_world * float(scale_eff[0])
+        root_rot = R.from_quat(_quat_normalize(item["human_root"][3:7]))
+        delta_local = root_rot.inv().apply(delta_world)
+        return root_rot.apply(delta_local * scale_eff)
+
+    def scale_design_matrix(item: dict, delta_world: np.ndarray) -> np.ndarray:
+        if not anisotropic_scale:
+            return delta_world.reshape(3, 1)
+        root_rot = R.from_quat(_quat_normalize(item["human_root"][3:7]))
+        delta_local = root_rot.inv().apply(delta_world)
+        return root_rot.as_matrix() @ np.diag(delta_local)
+
+    def scale_in_bounds(scale_eff: np.ndarray) -> bool:
+        return bool(
+            np.all(scale_eff >= args.scale_min * height_ratio)
+            and np.all(scale_eff <= args.scale_max * height_ratio)
+        )
+
+    def config_scale_from_eff(scale_eff: np.ndarray):
+        scale_config = scale_eff / height_ratio
+        if anisotropic_scale:
+            return [float(x) for x in scale_config]
+        return float(scale_config[0])
+
+    def refit_offset_for_scale(joint_name: str, scale_eff: np.ndarray) -> np.ndarray:
         offsets = []
         q_offset = q_offset_by_joint[joint_name]
         for item in observations[joint_name]:
@@ -306,11 +359,11 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
                     root_base = item["robot_root_position"]
                 else:
                     root_base = h_root * root_scale_eff
-                b = item["robot_position"] - root_base - scale_eff * (human[:3] - h_root)
+                b = item["robot_position"] - root_base - root_frame_scaled_delta(item, human[:3] - h_root, scale_eff)
             offsets.append(target_rot.inv().apply(b))
         return np.mean(np.asarray(offsets), axis=0)
 
-    def compute_errors(joint_name: str, scale_eff: float, offset_t: np.ndarray) -> tuple[list[float], list[float]]:
+    def compute_errors(joint_name: str, scale_eff: np.ndarray, offset_t: np.ndarray) -> tuple[list[float], list[float]]:
         pos_errors = []
         rot_errors = []
         q_offset = q_offset_by_joint[joint_name]
@@ -325,15 +378,133 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
                     root_base = item["robot_root_position"]
                 else:
                     root_base = h_root * root_scale_eff
-                pred_pos = (human[:3] - h_root) * scale_eff + root_base + target_rot.apply(offset_t)
+                pred_pos = root_frame_scaled_delta(item, human[:3] - h_root, scale_eff) + root_base + target_rot.apply(offset_t)
             pred_q = target_rot.as_quat()
             pos_errors.append(float(np.linalg.norm(pred_pos - item["robot_position"])))
             rot_errors.append(_rotation_error_deg(pred_q, item["robot_rotation"]))
         return pos_errors, rot_errors
 
-    def write_solution(joint_name: str, scale_eff: float, offset_t: np.ndarray, scale_group: str) -> None:
+    def default_scale_eff() -> np.ndarray:
+        # Config-space scale=1.0 still goes through HumanToRobotScaler's model/height ratio.
+        return np.full(3, float(height_ratio), dtype=np.float64)
+
+    def scalar_scale_design_matrix(delta_world: np.ndarray) -> np.ndarray:
+        return delta_world.reshape(3, 1)
+
+    def solve_single_axis_from_rows(
+        rows: list[np.ndarray],
+        rhs: list[np.ndarray],
+        num_offsets: int,
+    ) -> tuple[np.ndarray, list[np.ndarray], int, bool]:
+        reduced_rows = []
+        for row in rows:
+            reduced = np.zeros((3, 1 + 3 * num_offsets), dtype=np.float64)
+            reduced[:, 0] = np.sum(row[:, :3], axis=1)
+            reduced[:, 1:] = row[:, 3:]
+            reduced_rows.append(reduced)
+        mat = np.vstack(reduced_rows)
+        y = np.concatenate(rhs)
+        solution, _, rank, _ = np.linalg.lstsq(mat, y, rcond=None)
+        raw_scalar = float(solution[0])
+        scale_eff = np.full(3, raw_scalar, dtype=np.float64)
+        ok = rank >= (1 + 3 * num_offsets) and scale_in_bounds(scale_eff)
+        offsets = [
+            solution[1 + 3 * idx : 1 + 3 * (idx + 1)]
+            for idx in range(num_offsets)
+        ]
+        return scale_eff, offsets, rank, ok
+
+    def solve_anisotropic_or_degenerate(
+        rows: list[np.ndarray],
+        rhs: list[np.ndarray],
+        axis_values: list[np.ndarray],
+        num_offsets: int,
+    ) -> tuple[np.ndarray, list[np.ndarray], str, str | None]:
+        mat = np.vstack(rows)
+        y = np.concatenate(rhs)
+        solution, _, rank, _ = np.linalg.lstsq(mat, y, rcond=None)
+        raw_scale_eff = np.asarray(solution[:3], dtype=np.float64)
+        axis_values_np = np.asarray(axis_values, dtype=np.float64)
+        axis_spans = np.ptp(axis_values_np, axis=0) if len(axis_values_np) else np.zeros(3)
+        fixed_axes = [
+            axis
+            for axis in range(3)
+            if axis_spans[axis] < args.axis_motion_min
+            or raw_scale_eff[axis] < args.scale_min * height_ratio
+            or raw_scale_eff[axis] > args.scale_max * height_ratio
+        ]
+
+        axis_names = ["sx", "sy", "sz"]
+        if not fixed_axes and rank >= (3 + 3 * num_offsets):
+            offsets = [
+                solution[3 + 3 * idx : 3 + 3 * (idx + 1)]
+                for idx in range(num_offsets)
+            ]
+            return raw_scale_eff, offsets, "solved", None
+
+        if len(fixed_axes) == 1:
+            scale_eff = default_scale_eff()
+            free_axes = [axis for axis in range(3) if axis not in fixed_axes]
+            reduced_rows = []
+            reduced_rhs = []
+            for row, value in zip(rows, rhs):
+                fixed_contrib = row[:, fixed_axes] @ scale_eff[fixed_axes]
+                reduced = np.zeros((3, len(free_axes) + 3 * num_offsets), dtype=np.float64)
+                reduced[:, : len(free_axes)] = row[:, free_axes]
+                reduced[:, len(free_axes) :] = row[:, 3:]
+                reduced_rows.append(reduced)
+                reduced_rhs.append(value - fixed_contrib)
+            reduced_mat = np.vstack(reduced_rows)
+            reduced_y = np.concatenate(reduced_rhs)
+            reduced_solution, _, reduced_rank, _ = np.linalg.lstsq(reduced_mat, reduced_y, rcond=None)
+            reduced_required_rank = len(free_axes) + 3 * num_offsets
+            if reduced_rank >= reduced_required_rank:
+                scale_eff[free_axes] = reduced_solution[: len(free_axes)]
+                extra_fixed = [
+                    axis for axis in free_axes
+                    if scale_eff[axis] < args.scale_min * height_ratio
+                    or scale_eff[axis] > args.scale_max * height_ratio
+                ]
+                for axis in extra_fixed:
+                    scale_eff[axis] = height_ratio
+                if not extra_fixed:
+                    fixed_axis = fixed_axes[0]
+                    scale_eff[fixed_axis] = float(np.mean(scale_eff[free_axes]))
+                    note = (
+                        f"filled unreliable axis from mean of solved axes: "
+                        f"{axis_names[fixed_axis]}=mean("
+                        + ", ".join(axis_names[axis] for axis in free_axes)
+                        + ")"
+                    )
+                    # Refit offsets against the final filled scale instead of
+                    # keeping offsets solved under the temporary fixed-axis scale.
+                    return scale_eff, [], "solved_axis_filled_underconstrained", note
+
+        # If two or three axes are unreliable, or the two-axis solve fails,
+        # fall back to the original single-scalar model and refit offsets.
+        scalar_scale, scalar_offsets, scalar_rank, scalar_ok = solve_single_axis_from_rows(rows, rhs, num_offsets)
+        if scalar_ok:
+            fixed_note = ", ".join(axis_names[i] for i in sorted(set(fixed_axes))) if fixed_axes else "rank"
+            note = f"degenerated to single-axis scalar because unreliable axes: {fixed_note}"
+            return scalar_scale, scalar_offsets, "solved_degenerated_single_axis", note
+
+        scale_eff = default_scale_eff()
+        note = (
+            f"anisotropic rank={rank}, scalar rank={scalar_rank}; "
+            "fixed config scale to 1.0"
+        )
+        return scale_eff, [], "solved_fixed_scale_underconstrained", note
+
+    def write_solution(
+        joint_name: str,
+        scale_eff: np.ndarray,
+        offset_t: np.ndarray,
+        scale_group: str,
+        status: str = "solved",
+        note: str | None = None,
+    ) -> None:
         q_offset = q_offset_by_joint[joint_name]
-        scale_config = float(scale_eff / height_ratio)
+        scale_config = config_scale_from_eff(scale_eff)
         solved_scaler["joint_scales"][joint_name] = scale_config
         solved_scaler.setdefault("joint_offsets", {})[joint_name] = [
             [float(x) for x in offset_t],
@@ -343,17 +514,18 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
         report["joints"].append(
             {
                 "joint": joint_name,
-                "status": "solved",
+                "status": status,
                 "samples": len(observations[joint_name]),
                 "scale_group": scale_group,
                 "scale_config": scale_config,
-                "scale_effective": scale_eff,
+                "scale_effective": _scale_report_value(scale_eff),
                 "translation_offset": [float(x) for x in offset_t],
                 "rotation_offset_xyzw": [float(x) for x in q_offset],
                 "mean_position_error_m": float(np.mean(pos_errors)),
                 "max_position_error_m": float(np.max(pos_errors)),
                 "mean_rotation_error_deg": float(np.mean(rot_errors)),
                 "max_rotation_error_deg": float(np.max(rot_errors)),
+                **({"note": note} if note else {}),
             }
         )
 
@@ -377,13 +549,19 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
         ):
             rows = []
             rhs = []
+            scale_axis_values = []
             for side_idx, side_joint in enumerate((joint_name, partner)):
                 q_offset = q_offset_by_joint[side_joint]
-                offset_col_start = 1 + side_idx * 3
+                num_scale_cols = 3 if anisotropic_scale else 1
+                offset_col_start = num_scale_cols + side_idx * 3
                 for item in observations[side_joint]:
                     human = item["human"]
                     h_root = item["human_root"][:3]
                     a = human[:3] - h_root
+                    if anisotropic_scale:
+                        scale_axis_values.append(
+                            R.from_quat(_quat_normalize(item["human_root"][3:7])).inv().apply(a)
+                        )
                     h_q = _quat_normalize(human[3:7])
                     target_rot = R.from_quat(h_q) * R.from_quat(q_offset)
                     if root_align_positions and item.get("robot_root_position") is not None:
@@ -391,26 +569,44 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
                     else:
                         root_base = h_root * root_scale_eff
                     b = item["robot_position"] - root_base
-                    block = np.zeros((3, 7), dtype=np.float64)
-                    block[:, 0] = a
+                    block = np.zeros((3, num_scale_cols + 6), dtype=np.float64)
+                    block[:, 0:num_scale_cols] = scale_design_matrix(item, a)
                     block[:, offset_col_start : offset_col_start + 3] = target_rot.as_matrix()
                     rows.append(block)
                     rhs.append(b)
             mat = np.vstack(rows)
             y = np.concatenate(rhs)
             solution, residuals, rank, singular_values = np.linalg.lstsq(mat, y, rcond=None)
-            scale_eff = float(solution[0])
-            left_offset = solution[1:4]
-            right_offset = solution[4:7]
-            unclamped_scale_eff = scale_eff
-            scale_eff = float(np.clip(scale_eff, args.scale_min * height_ratio, args.scale_max * height_ratio))
-            if abs(scale_eff - unclamped_scale_eff) > 1e-9:
+            raw_scale_eff = np.asarray(solution[0: (3 if anisotropic_scale else 1)], dtype=np.float64)
+            if not anisotropic_scale:
+                raw_scale_eff = np.full(3, float(raw_scale_eff[0]), dtype=np.float64)
+            required_rank = 9 if anisotropic_scale else 7
+            scale_out_of_bounds = not scale_in_bounds(raw_scale_eff)
+            underconstrained = rank < required_rank or scale_out_of_bounds
+            if anisotropic_scale:
+                scale_eff, offsets, status, note = solve_anisotropic_or_degenerate(rows, rhs, scale_axis_values, 2)
+                if offsets:
+                    left_offset, right_offset = offsets
+                else:
+                    left_offset = refit_offset_for_scale(joint_name, scale_eff)
+                    right_offset = refit_offset_for_scale(partner, scale_eff)
+            elif underconstrained:
+                scale_eff = default_scale_eff()
                 left_offset = refit_offset_for_scale(joint_name, scale_eff)
                 right_offset = refit_offset_for_scale(partner, scale_eff)
+                status = "solved_fixed_scale_underconstrained"
+                reason = f"least_squares_rank={rank}<7" if rank < 7 else f"raw_scale_eff={_scale_report_value(raw_scale_eff)} outside bounds"
+                note = f"{reason}; fixed config scale to 1.0"
+            else:
+                scale_eff = raw_scale_eff
+                left_offset = solution[1:4]
+                right_offset = solution[4:7]
+                status = "solved"
+                note = None
 
             group_name = f"{joint_name}<->{partner}"
-            write_solution(joint_name, scale_eff, left_offset, group_name)
-            write_solution(partner, scale_eff, right_offset, group_name)
+            write_solution(joint_name, scale_eff, left_offset, group_name, status=status, note=note)
+            write_solution(partner, scale_eff, right_offset, group_name, status=status, note=note)
             visited.add(joint_name)
             visited.add(partner)
             continue
@@ -418,15 +614,20 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
         q_offset = q_offset_by_joint[joint_name]
 
         if joint_name == root_name:
-            scale_eff = root_scale_eff
+            scale_eff = root_scale_eff_vec
             offset_t = refit_offset_for_scale(joint_name, scale_eff)
         else:
             rows = []
             rhs = []
+            scale_axis_values = []
             for item in obs:
                 human = item["human"]
                 h_root = item["human_root"][:3]
                 a = human[:3] - h_root
+                if anisotropic_scale:
+                    scale_axis_values.append(
+                        R.from_quat(_quat_normalize(item["human_root"][3:7])).inv().apply(a)
+                    )
                 h_q = _quat_normalize(human[3:7])
                 target_rot = R.from_quat(h_q) * R.from_quat(q_offset)
                 qmat = target_rot.as_matrix()
@@ -435,23 +636,40 @@ def _solve_offsets(observations: dict, scaler_config: dict, retargeter_config: d
                 else:
                     root_base = h_root * root_scale_eff
                 b = item["robot_position"] - root_base
-                block = np.zeros((3, 4), dtype=np.float64)
-                block[:, 0] = a
-                block[:, 1:4] = qmat
+                num_scale_cols = 3 if anisotropic_scale else 1
+                block = np.zeros((3, num_scale_cols + 3), dtype=np.float64)
+                block[:, 0:num_scale_cols] = scale_design_matrix(item, a)
+                block[:, num_scale_cols : num_scale_cols + 3] = qmat
                 rows.append(block)
                 rhs.append(b)
             mat = np.vstack(rows)
             y = np.concatenate(rhs)
             solution, residuals, rank, singular_values = np.linalg.lstsq(mat, y, rcond=None)
-            scale_eff = float(solution[0])
-            offset_t = solution[1:4]
-            unclamped_scale_eff = scale_eff
-            scale_eff = float(np.clip(scale_eff, args.scale_min * height_ratio, args.scale_max * height_ratio))
-            if abs(scale_eff - unclamped_scale_eff) > 1e-9:
-                # Refit local offset after clamping scale.
+            raw_scale_eff = np.asarray(solution[0: (3 if anisotropic_scale else 1)], dtype=np.float64)
+            if not anisotropic_scale:
+                raw_scale_eff = np.full(3, float(raw_scale_eff[0]), dtype=np.float64)
+            required_rank = 6 if anisotropic_scale else 4
+            scale_out_of_bounds = not scale_in_bounds(raw_scale_eff)
+            underconstrained = rank < required_rank or scale_out_of_bounds
+            if anisotropic_scale:
+                scale_eff, offsets, status, note = solve_anisotropic_or_degenerate(rows, rhs, scale_axis_values, 1)
+                offset_t = offsets[0] if offsets else refit_offset_for_scale(joint_name, scale_eff)
+            elif underconstrained:
+                scale_eff = default_scale_eff()
                 offset_t = refit_offset_for_scale(joint_name, scale_eff)
+                status = "solved_fixed_scale_underconstrained"
+                reason = f"least_squares_rank={rank}<4" if rank < 4 else f"raw_scale_eff={_scale_report_value(raw_scale_eff)} outside bounds"
+                note = f"{reason}; fixed config scale to 1.0"
+            else:
+                scale_eff = raw_scale_eff
+                offset_t = solution[1:4]
+                status = "solved"
+                note = None
 
-        write_solution(joint_name, scale_eff, offset_t, joint_name)
+        if joint_name == root_name:
+            write_solution(joint_name, scale_eff, offset_t, joint_name)
+        else:
+            write_solution(joint_name, scale_eff, offset_t, joint_name, status=status, note=note)
         visited.add(joint_name)
 
     solved_retargeter = copy.deepcopy(retargeter_config)
@@ -478,8 +696,9 @@ def _write_report_md(path: Path, report: dict, scaler_path: Path, retargeter_pat
         "# SOMA Robot Calibration Solve Report",
         "",
         f"- Pose pairs: {report['num_pose_pairs']}",
-        f"- Root scale config: {report['root_scale_config']:.6f}",
-        f"- Root scale effective: {report.get('root_scale_effective', 0.0):.6f}",
+        f"- Root scale config: {_format_scale_for_md(report['root_scale_config'])}",
+        f"- Root scale effective: {_format_scale_for_md(report.get('root_scale_effective', 0.0))}",
+        f"- Anisotropic scale: `{report.get('anisotropic_scale', False)}`",
         f"- Root position alignment: `{report.get('root_position_alignment', False)}`",
         f"- Root position offset storage: `{report.get('root_position_offset_storage', 'scaler')}`",
         f"- Root translation offset: `{report.get('root_translation_offset', [0.0, 0.0, 0.0])}`",
@@ -494,7 +713,7 @@ def _write_report_md(path: Path, report: dict, scaler_path: Path, retargeter_pat
     for item in report["joints"]:
         lines.append(
             f"| {item['joint']} | {item['status']} | {item.get('samples', 0)} | "
-            f"{item.get('scale_config', 0.0):.5f} | {item.get('mean_position_error_m', 0.0):.4f} | "
+            f"{_format_scale_for_md(item.get('scale_config', 0.0))} | {item.get('mean_position_error_m', 0.0):.4f} | "
             f"{item.get('max_position_error_m', 0.0):.4f} | {item.get('mean_rotation_error_deg', 0.0):.2f} | "
             f"{item.get('max_rotation_error_deg', 0.0):.2f} |"
         )
@@ -512,6 +731,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-retargeter-config", type=str, default=None)
     parser.add_argument("--base-scaler-config", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=str(_REPO_ROOT / "output/calibration_solve"))
+    parser.add_argument("--output-prefix", type=str, default=None)
     parser.add_argument("--soma-facing-direction", choices=["Mujoco", "Maya"], default="Mujoco")
     parser.add_argument("--human-root-name", type=str, default="Hips")
     parser.add_argument("--root-scale", type=float, default=None, help="Optional fixed config-space root scale. Defaults to base scaler Hips.")
@@ -530,6 +750,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--scale-min", type=float, default=0.3)
     parser.add_argument("--scale-max", type=float, default=1.5)
+    parser.add_argument(
+        "--anisotropic-scale",
+        action="store_true",
+        help="Solve per-joint [sx, sy, sz] scales in the human root frame instead of a single scalar.",
+    )
+    parser.add_argument(
+        "--axis-motion-min",
+        type=float,
+        default=0.02,
+        help="Minimum root-frame motion span in meters required to solve one anisotropic scale axis.",
+    )
     return parser.parse_args()
 
 
@@ -548,8 +779,9 @@ def main() -> None:
 
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_scaler = output_dir / f"{args.robot_type}_recommended_scaler_config.json"
-    out_retargeter = output_dir / f"{args.robot_type}_recommended_retargeter_config.json"
+    output_prefix = args.output_prefix or f"{args.robot_type}_recommended"
+    out_scaler = output_dir / f"{output_prefix}_scaler_config.json"
+    out_retargeter = output_dir / f"{output_prefix}_retargeter_config.json"
     out_report_json = output_dir / "calibration_solve_report.json"
     out_report_md = output_dir / "calibration_solve_report.md"
 
