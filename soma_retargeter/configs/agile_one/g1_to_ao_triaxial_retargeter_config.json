@@ -1,0 +1,239 @@
+{
+    "source_type": "unitree_g1",
+    "target_type": "agile_one",
+    "source_robot_mjcf_path": "/home/ruiming.wu/codes/unitree_ros/robots/g1_description/g1_29dof_rev_1_0.xml",
+    "robot_mjcf_path": "/home/ruiming.wu/codes/H4/mjcf/h4_mjlab.xml",
+    "source_motion_format": {
+        "type": "humanoid_everyday_g1_csv",
+        "fps": 30.0,
+        "root_unit": "cm",
+        "root_rotation": "xyz_euler_deg",
+        "joint_unit": "deg",
+        "root_policy": "odometry",
+        "default_manifest": "/home/ruiming.wu/data/Humanoid-Everyday-G1-rooted/g1_csv/manifest.csv"
+    },
+    "source_robot_to_robot_scaler_config": "agile_one/g1_to_ao_triaxial_scaler_config.json",
+    "human_robot_scaler_config": "agile_one/g1_to_ao_triaxial_scaler_config.json",
+    "feet_stabilizer_config": "agile_one/agile_one_feet_stabilizer_config.json",
+    "model_height": 1.0,
+    "ik_iterations": 24,
+    "joint_limit_weight": 10.0,
+    "smooth_joint_filter_weight": 5.5,
+    "joint_motion_smooth_weight": 5.0,
+    "joint_objective_excluded_joint_name_patterns": [
+        "thumb",
+        "index",
+        "middle",
+        "ring",
+        "little",
+        "follower"
+    ],
+    "collision_weight": 0.0,
+    "enable_post_processing": true,
+    "first_output_frame_ik_repeats": 3,
+    "first_output_frame_joint_motion_smooth_weight": 0.0,
+    "initial_robot_joint_positions": {
+        "unit": "rad",
+        "root_position": [
+            0.0,
+            -3.422854287575776e-08,
+            1.0
+        ],
+        "root_rotation_xyzw": [
+            0.0,
+            0.0,
+            -0.70710678,
+            0.70710678
+        ],
+        "joints": {
+            "left_hip_pitch_joint": 0.0,
+            "left_hip_roll_joint": 0.0,
+            "left_hip_yaw_joint": 0.0,
+            "left_knee_joint": 0.0,
+            "left_ankle_roll_joint": 0.0,
+            "left_ankle_pitch_joint": 0.0,
+            "right_hip_pitch_joint": 0.0,
+            "right_hip_roll_joint": 0.0,
+            "right_hip_yaw_joint": 0.0,
+            "right_knee_joint": 0.0,
+            "right_ankle_roll_joint": 0.0,
+            "right_ankle_pitch_joint": 0.0,
+            "waist_yaw_joint": 0.0,
+            "head_yaw_joint": 0.0,
+            "head_pitch_joint": 0.0,
+            "left_shoulder_pitch_joint": -1.57079627,
+            "left_shoulder_roll_joint": -1.3962634,
+            "left_shoulder_yaw_joint": -1.57079627,
+            "left_elbow_roll_joint": 1.57079627,
+            "left_wrist_yaw_joint": 1.3962634,
+            "left_wrist_roll_joint": 0.0,
+            "left_wrist_pitch_joint": 0.0,
+            "right_shoulder_pitch_joint": 1.57079627,
+            "right_shoulder_roll_joint": 1.3962634,
+            "right_shoulder_yaw_joint": 1.57079627,
+            "right_elbow_roll_joint": -1.57079627,
+            "right_wrist_yaw_joint": -1.3962634,
+            "right_wrist_roll_joint": 0.0,
+            "right_wrist_pitch_joint": 0.0
+        }
+    },
+    "smooth_joint_filter_objective_body_masks": {
+        "left_shoulder_pitch_link": 0.1,
+        "left_shoulder_roll_link": 1.0,
+        "left_shoulder_yaw_link": 0.3,
+        "right_shoulder_pitch_link": 0.1,
+        "right_shoulder_roll_link": 1.0,
+        "right_shoulder_yaw_link": 0.3
+    },
+    "source_ik_map": {
+        "Hips": {
+            "t_body": "pelvis",
+            "r_body": "pelvis"
+        },
+        "Chest": {
+            "t_body": "torso_link",
+            "r_body": "torso_link"
+        },
+        "LeftArm": {
+            "t_body": "left_shoulder_roll_link",
+            "r_body": "left_shoulder_roll_link"
+        },
+        "LeftForeArm": {
+            "t_body": "left_elbow_link",
+            "r_body": "left_elbow_link"
+        },
+        "LeftHand": {
+            "t_body": "left_wrist_yaw_link",
+            "r_body": "left_wrist_yaw_link"
+        },
+        "RightArm": {
+            "t_body": "right_shoulder_roll_link",
+            "r_body": "right_shoulder_roll_link"
+        },
+        "RightForeArm": {
+            "t_body": "right_elbow_link",
+            "r_body": "right_elbow_link"
+        },
+        "RightHand": {
+            "t_body": "right_wrist_yaw_link",
+            "r_body": "right_wrist_yaw_link"
+        },
+        "LeftLeg": {
+            "t_body": "left_hip_roll_link",
+            "r_body": "left_hip_roll_link"
+        },
+        "LeftShin": {
+            "t_body": "left_knee_link",
+            "r_body": "left_knee_link"
+        },
+        "LeftFoot": {
+            "t_body": "left_ankle_roll_link",
+            "r_body": "left_ankle_roll_link"
+        },
+        "RightLeg": {
+            "t_body": "right_hip_roll_link",
+            "r_body": "right_hip_roll_link"
+        },
+        "RightShin": {
+            "t_body": "right_knee_link",
+            "r_body": "right_knee_link"
+        },
+        "RightFoot": {
+            "t_body": "right_ankle_roll_link",
+            "r_body": "right_ankle_roll_link"
+        }
+    },
+    "ik_map": {
+        "Hips": {
+            "t_body": "pelvis_link",
+            "r_body": "pelvis_link",
+            "t_weight": 10.0,
+            "r_weight": 2.0,
+            "t_offset": [
+                0.0,
+                3.422854287575776e-08,
+                0.0
+            ]
+        },
+        "Chest": {
+            "t_body": "torso_link",
+            "r_body": "torso_link",
+            "t_weight": 0.7,
+            "r_weight": 0.7
+        },
+        "LeftArm": {
+            "t_body": "left_shoulder_roll_link",
+            "r_body": "left_shoulder_roll_link",
+            "t_weight": 1.5,
+            "r_weight": 0.15
+        },
+        "LeftForeArm": {
+            "t_body": "left_elbow_roll_link",
+            "r_body": "left_elbow_roll_link",
+            "t_weight": 1.0,
+            "r_weight": 1.0
+        },
+        "LeftHand": {
+            "t_body": "left_wrist_pitch_link",
+            "r_body": "left_wrist_pitch_link",
+            "t_weight": 5.0,
+            "r_weight": 2.5
+        },
+        "RightArm": {
+            "t_body": "right_shoulder_roll_link",
+            "r_body": "right_shoulder_roll_link",
+            "t_weight": 1.5,
+            "r_weight": 0.15
+        },
+        "RightForeArm": {
+            "t_body": "right_elbow_roll_link",
+            "r_body": "right_elbow_roll_link",
+            "t_weight": 1.0,
+            "r_weight": 1.0
+        },
+        "RightHand": {
+            "t_body": "right_wrist_pitch_link",
+            "r_body": "right_wrist_pitch_link",
+            "t_weight": 5.0,
+            "r_weight": 2.5
+        },
+        "LeftLeg": {
+            "t_body": "left_hip_roll_link",
+            "r_body": "left_hip_roll_link",
+            "t_weight": 1.5,
+            "r_weight": 0.15
+        },
+        "LeftShin": {
+            "t_body": "left_knee_link",
+            "r_body": "left_knee_link",
+            "t_weight": 1.0,
+            "r_weight": 1.0
+        },
+        "LeftFoot": {
+            "t_body": "left_ankle_pitch_link",
+            "r_body": "left_ankle_pitch_link",
+            "t_weight": 30.0,
+            "r_weight": 2.0
+        },
+        "RightLeg": {
+            "t_body": "right_hip_roll_link",
+            "r_body": "right_hip_roll_link",
+            "t_weight": 1.5,
+            "r_weight": 0.15
+        },
+        "RightShin": {
+            "t_body": "right_knee_link",
+            "r_body": "right_knee_link",
+            "t_weight": 1.0,
+            "r_weight": 1.0
+        },
+        "RightFoot": {
+            "t_body": "right_ankle_pitch_link",
+            "r_body": "right_ankle_pitch_link",
+            "t_weight": 30.0,
+            "r_weight": 2.0
+        }
+    },
+    "ik_map_excluded_target_names": [],
+    "_comment": "Bootstrap G1 -> Agile One robot-source retargeter config. source_ik_map is derived from SOMA->G1 by semantic key, ik_map is derived from SOMA->AO by the same semantic key. Pose-pair calibration should solve g1_to_ao_triaxial_scaler_config.json before full retargeting."
+}

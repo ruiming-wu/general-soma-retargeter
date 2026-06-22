@@ -217,6 +217,7 @@ def cache_key(args: argparse.Namespace, robot: str) -> dict[str, Any]:
         "position_warn_m": args.position_warn_m,
         "retarget_source_facing_direction": args.retarget_source_facing_direction,
         "retargeter_config": str(args.retargeter_config.resolve()) if args.retargeter_config else "",
+        "preserve_motion_subdirs": args.preserve_motion_subdirs,
         "metrics_policy": "judgement_targets_v3_all_status_clip_metrics",
     }
 
@@ -315,6 +316,24 @@ def make_exception_result(bvh_path: Path, robot: str, exc: BaseException) -> dic
     }
 
 
+def motion_csv_path_for(
+    bvh_path: Path,
+    motion_csv_dir: Path,
+    bvh_root: Path | None,
+    preserve_motion_subdirs: bool,
+) -> Path:
+    if preserve_motion_subdirs and bvh_root is not None:
+        try:
+            rel_path = bvh_path.relative_to(bvh_root)
+        except ValueError:
+            try:
+                rel_path = bvh_path.absolute().relative_to(bvh_root.absolute())
+            except ValueError:
+                rel_path = Path(bvh_path.name)
+        return (motion_csv_dir / rel_path).with_suffix(".csv")
+    return motion_csv_dir / f"{bvh_path.stem}.csv"
+
+
 def trim_animation(animation: AnimationBuffer, max_frames: int | None) -> AnimationBuffer:
     if max_frames is None or animation.num_frames <= max_frames:
         return animation
@@ -334,6 +353,8 @@ def evaluate_buffer(
     buffer,
     target_index: int,
     motion_csv_dir: Path | None,
+    bvh_root: Path | None,
+    preserve_motion_subdirs: bool,
     save_motion_csv: bool,
     continue_after_failure: bool,
     rotation_fail_deg: float,
@@ -343,9 +364,9 @@ def evaluate_buffer(
 ) -> dict[str, Any]:
     motion_csv_path = None
     if motion_csv_dir is not None:
-        motion_csv_dir.mkdir(parents=True, exist_ok=True)
-        motion_csv_path = motion_csv_dir / f"{bvh_path.stem}.csv"
+        motion_csv_path = motion_csv_path_for(bvh_path, motion_csv_dir, bvh_root, preserve_motion_subdirs)
         if save_motion_csv:
+            motion_csv_path.parent.mkdir(parents=True, exist_ok=True)
             csv_utils.save_csv(str(motion_csv_path), buffer, csv_utils.get_csv_config(robot))
 
     targets = pipeline.input_targets[target_index]
@@ -475,6 +496,8 @@ def evaluate_batch(
     max_frames: int | None,
     retarget_source_facing_direction: str,
     motion_csv_dir: Path | None,
+    bvh_root: Path | None,
+    preserve_motion_subdirs: bool,
     resume: bool,
     continue_after_failure: bool,
     rotation_fail_deg: float,
@@ -490,7 +513,7 @@ def evaluate_batch(
     missing_paths: list[Path] = []
     if resume and motion_csv_dir is not None:
         for bvh_path in bvh_paths:
-            motion_csv_path = motion_csv_dir / f"{bvh_path.stem}.csv"
+            motion_csv_path = motion_csv_path_for(bvh_path, motion_csv_dir, bvh_root, preserve_motion_subdirs)
             if motion_csv_path.exists() and motion_csv_path.stat().st_size > 0:
                 existing_paths.append(bvh_path)
             else:
@@ -507,6 +530,8 @@ def evaluate_batch(
                 max_frames=max_frames,
                 retarget_source_facing_direction=retarget_source_facing_direction,
                 motion_csv_dir=motion_csv_dir,
+                bvh_root=bvh_root,
+                preserve_motion_subdirs=preserve_motion_subdirs,
                 continue_after_failure=continue_after_failure,
                 rotation_fail_deg=rotation_fail_deg,
                 position_fail_m=position_fail_m,
@@ -548,6 +573,8 @@ def evaluate_batch(
                     buffer=buffer,
                     target_index=idx,
                     motion_csv_dir=motion_csv_dir,
+                    bvh_root=bvh_root,
+                    preserve_motion_subdirs=preserve_motion_subdirs,
                     save_motion_csv=True,
                     continue_after_failure=continue_after_failure,
                     rotation_fail_deg=rotation_fail_deg,
@@ -568,6 +595,8 @@ def evaluate_existing_csv_batch(
     max_frames: int | None,
     retarget_source_facing_direction: str,
     motion_csv_dir: Path,
+    bvh_root: Path | None,
+    preserve_motion_subdirs: bool,
     continue_after_failure: bool,
     rotation_fail_deg: float,
     position_fail_m: float,
@@ -597,7 +626,7 @@ def evaluate_existing_csv_batch(
     csv_config = csv_utils.get_csv_config(robot)
     for idx, (bvh_path, animation) in enumerate(zip(bvh_paths, animations, strict=True)):
         try:
-            motion_csv_path = motion_csv_dir / f"{bvh_path.stem}.csv"
+            motion_csv_path = motion_csv_path_for(bvh_path, motion_csv_dir, bvh_root, preserve_motion_subdirs)
             buffer = csv_utils.load_csv(str(motion_csv_path), fps=animation.sample_rate, csv_config=csv_config)
             results.append(
                 evaluate_buffer(
@@ -608,6 +637,8 @@ def evaluate_existing_csv_batch(
                     buffer=buffer,
                     target_index=idx,
                     motion_csv_dir=motion_csv_dir,
+                    bvh_root=bvh_root,
+                    preserve_motion_subdirs=preserve_motion_subdirs,
                     save_motion_csv=False,
                     continue_after_failure=continue_after_failure,
                     rotation_fail_deg=rotation_fail_deg,
@@ -635,6 +666,8 @@ def process_batch_job(args: tuple[list[Path], str, argparse.Namespace]) -> list[
             max_frames=ns.max_frames,
             retarget_source_facing_direction=ns.retarget_source_facing_direction,
             motion_csv_dir=Path(ns.motion_csv_dir) if ns.motion_csv_dir else None,
+            bvh_root=Path(ns.bvh_dir),
+            preserve_motion_subdirs=ns.preserve_motion_subdirs,
             resume=ns.resume,
             continue_after_failure=ns.continue_after_failure,
             rotation_fail_deg=ns.rotation_fail_deg,
@@ -656,6 +689,29 @@ def process_batch_job_isolated(job: tuple[list[Path], str, argparse.Namespace]) 
     ) as executor:
         future = executor.submit(process_batch_job, job)
         return future.result()
+
+
+def process_batch_job_with_fallback(
+    job: tuple[list[Path], str, argparse.Namespace],
+    use_process_isolation: bool,
+) -> list[dict[str, Any]]:
+    bvh_paths, robot, ns = job
+    try:
+        if use_process_isolation:
+            return process_batch_job_isolated(job)
+        return process_batch_job(job)
+    except Exception as exc:
+        if len(bvh_paths) <= 1:
+            return [make_exception_result(bvh_paths[0], robot, exc)]
+        mid = len(bvh_paths) // 2
+        print(
+            f"[soma-benchmark] batch size {len(bvh_paths)} crashed; "
+            f"retrying as {mid}+{len(bvh_paths) - mid}. error={exc}",
+            flush=True,
+        )
+        left = process_batch_job_with_fallback((bvh_paths[:mid], robot, ns), use_process_isolation)
+        right = process_batch_job_with_fallback((bvh_paths[mid:], robot, ns), use_process_isolation)
+        return left + right
 
 
 METRIC_FIELDS = ["source_path", "robot", "metric", "count", "mean", "min", "max", "c95_low", "c95_high", "c99_low", "c99_high"]
@@ -925,6 +981,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--save-motion-csv", action="store_true", help="Save one retargeted robot CSV per BVH clip.")
     parser.add_argument(
+        "--preserve-motion-subdirs",
+        action="store_true",
+        help="Save motion CSVs under motions/<relative BVH path>. This avoids stem collisions across GRAB subjects.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume an interrupted run. Existing motion CSVs are reused and re-evaluated so final metrics cover all clips.",
@@ -1012,7 +1073,11 @@ def run_robot(args: argparse.Namespace, bvh_files: list[Path], robot: str, times
     existing_motion_csvs = 0
     if args.resume and args.motion_csv_dir:
         motion_csv_dir = Path(args.motion_csv_dir)
-        existing_motion_csvs = sum(1 for path in bvh_files if (motion_csv_dir / f"{path.stem}.csv").exists())
+        existing_motion_csvs = sum(
+            1
+            for path in bvh_files
+            if motion_csv_path_for(path, motion_csv_dir, args.bvh_dir, args.preserve_motion_subdirs).exists()
+        )
     print(
         f"[soma-benchmark] clips={len(bvh_files)} robot={robot} "
         f"batches={len(jobs)} batch_size={args.batch_size} resume={args.resume} "
@@ -1054,9 +1119,9 @@ def run_robot(args: argparse.Namespace, bvh_files: list[Path], robot: str, times
             status.set_description_str(status_desc("soma", status_counts, len(bvh_files)), refresh=True)
             for job in jobs:
                 if args.no_batch_process_isolation:
-                    batch_results = process_batch_job(job)
+                    batch_results = process_batch_job_with_fallback(job, use_process_isolation=False)
                 else:
-                    batch_results = process_batch_job_isolated(job)
+                    batch_results = process_batch_job_with_fallback(job, use_process_isolation=True)
                 report_writer.record_batch(batch_results)
                 append_result_cache(result_cache_jsonl, batch_results, current_cache_key)
                 for result in batch_results:
@@ -1099,6 +1164,7 @@ def run_robot(args: argparse.Namespace, bvh_files: list[Path], robot: str, times
         },
         "retarget_source_facing_direction": args.retarget_source_facing_direction,
         "retargeter_config": str(args.retargeter_config.resolve()) if args.retargeter_config else "",
+        "preserve_motion_subdirs": args.preserve_motion_subdirs,
         "judgement_targets": {
             "rotation": sorted(JUDGEMENT_ROTATION_JOINTS),
             "position": sorted(JUDGEMENT_POSITION_JOINTS),
